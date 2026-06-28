@@ -18,5 +18,8 @@
     "src",
     "test",
     "vitest.config.ts"
+  ],
+  "exclude": [
+    "test/integration"
   ]
 }
