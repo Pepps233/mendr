@@ -28,7 +28,7 @@ When it finds a problem, **mendr** automates the review, fix, validate loop: it 
 ## Agent Session Model
 
 <p align="center">
-  <img src="assets/mendr-agent-session-model.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
+  <img src="assets/mendr_pipeline.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
 </p>
 
 Every review and fix step starts a new agent process to isolate reviewer from fixer.
