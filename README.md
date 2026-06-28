@@ -16,12 +16,8 @@ It uses your existing Codex or Claude Code subscriptions through their local CLI
 Point it at a GitHub pull request, choose `claude` or `codex`, and it continuously scans the PR for scoped issues.
 When it finds a problem, **mendr** automates the review, fix, validate loop: it launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
 
-## About mendr
-
-Autonomous code-review tools work best when scope is explicit, progress is inspectable, and the loop can keep running after the terminal closes.
 **mendr** is built with principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view), including repeated discovery, handoff, verification, persistence, and scheduling.
 **mendr** is designed around those constraints:
-
 - It treats the main loop as deterministic TypeScript orchestration, not another long-running LLM session.
 - It launches a fresh one-shot review or fix agent process for each step.
 - It automates the review, fix, validate cycle instead of leaving the user to manually reprompt agents.
@@ -29,27 +25,19 @@ Autonomous code-review tools work best when scope is explicit, progress is inspe
 - It writes review state to disk so `mendr ls` and `mendr view <id>` can inspect in-flight work.
 - It posts one final pull request summary comment instead of scattering review noise across the PR.
 
-## How It Works
+## Agent Session Model
 
-```text
-mendr <agent> <pr>
-  |
-  +- detached daemon
-       |
-       +- fetch PR body, comments, and diff with gh
-       +- review the PR for scoped issue discovery
-       +- run fix agent for each issue
-       +- commit and push fixes through the agent workflow
-       +- validate by reviewing the PR again
-       +- append resolved issues to report.md
-       +- repeat until clean or the round cap is reached
-       +- post report.md as a single PR comment
-```
+<p align="center">
+  <img src="assets/mendr-agent-session-model.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
+</p>
 
-The review agent is responsible for finding issues strictly inside the pull request's changed scope.
-The fix agent is responsible for editing, committing, and pushing a fix for a single issue.
-The orchestrator owns the loop, persistence, status events, and final report.
-That loop is what lets **mendr** keep scanning the same pull request and autonomously push fixes until the review comes back clean.
+Every review and fix step starts a new agent process to isolate reviewer from fixer.
+Claude Code sessions run through `claude -p` with JSON output and repository access through `--add-dir`.
+Codex sessions run through `codex exec` with `--sandbox workspace-write`, `-C <repo>`, and final-message capture.
+
+The orchestrator never uses `--continue`, `--resume`, or a reused agent process.
+This keeps each step isolated and releases memory when the child process exits.
+Continuity comes from `report.md`, which is embedded in every subsequent review and fix prompt.
 
 ## CLI
 
@@ -98,20 +86,6 @@ After installation, run:
 ```sh
 mendr --help
 ```
-
-## Agent Session Model
-
-<p align="center">
-  <img src="assets/mendr-agent-session-model.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
-</p>
-
-Every review and fix step starts a new agent process.
-Claude Code sessions run through `claude -p` with JSON output and repository access through `--add-dir`.
-Codex sessions run through `codex exec` with `--sandbox workspace-write`, `-C <repo>`, and final-message capture.
-
-The orchestrator never uses `--continue`, `--resume`, or a reused agent process.
-This keeps each step isolated and releases memory when the child process exits.
-Continuity comes from `report.md`, which is embedded in every subsequent review and fix prompt.
 
 ## Report Format
 
