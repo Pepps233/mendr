@@ -9,19 +9,22 @@
 [![Language: TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6.svg)](tsconfig.json)
 [![CI](https://github.com/Pepps233/mendr/actions/workflows/ci.yml/badge.svg)](https://github.com/Pepps233/mendr/actions/workflows/ci.yml)
 
-Autonomous pull request code review for terminal-native workflows.
+Autonomous PR code-review CLI that continuously scans pull requests and pushes fixes until no issues remain.
 
-`mendr` is a TypeScript CLI that orchestrates installed coding-agent CLIs as short-lived workers.
+`mendr` is a TypeScript CLI that orchestrates installed Codex or Claude Code CLIs as short-lived workers.
+It uses your existing Codex or Claude Code subscriptions through their local CLIs, so there are no API keys for `mendr` to collect or manage.
 Point it at a GitHub pull request, choose `claude` or `codex`, and it continuously scans the PR for scoped issues.
-When it finds a problem, `mendr` launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
+When it finds a problem, `mendr` automates the review, fix, validate loop: it launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
 
 ## Why mendr
 
-Code review agents are most useful when they stay scoped, leave an audit trail, and can be stopped or inspected without keeping a terminal session open.
+Autonomous code-review tools work best when scope is explicit, progress is inspectable, and the loop can keep running after the terminal closes.
+`mendr` is built with principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view), including repeated discovery, handoff, verification, persistence, and scheduling.
 `mendr` is designed around those constraints:
 
 - It treats the main loop as deterministic TypeScript orchestration, not another long-running LLM session.
 - It launches a fresh one-shot review or fix agent process for each step.
+- It automates the review, fix, validate cycle instead of leaving the user to manually reprompt agents.
 - It carries continuity through `report.md`, which is injected into every later prompt.
 - It writes review state to disk so `mendr ls` and `mendr view <id>` can inspect in-flight work.
 - It posts one final pull request summary comment instead of scattering review noise across the PR.
@@ -34,9 +37,10 @@ mendr <agent> <pr>
   +- detached daemon
        |
        +- fetch PR body, comments, and diff with gh
-       +- run review agent for scoped issue discovery
+       +- review the PR for scoped issue discovery
        +- run fix agent for each issue
        +- commit and push fixes through the agent workflow
+       +- validate by reviewing the PR again
        +- append resolved issues to report.md
        +- repeat until clean or the round cap is reached
        +- post report.md as a single PR comment
@@ -80,8 +84,8 @@ The review continues in the background, and `view` follows the file-backed statu
   - `claude` for Claude Code.
   - `codex` for Codex.
 
-`mendr` shells out to installed CLIs and uses their existing authentication.
-It does not collect API keys or manage model provider credentials.
+`mendr` shells out to installed Codex or Claude Code CLIs and uses your existing subscriptions and local authentication.
+It does not require API keys, collect credentials, or manage model provider secrets.
 
 ## Installation
 
