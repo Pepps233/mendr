@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { buildClaudeReviewInvocation, parseClaudeIssues } from "../../src/agents/claude";
-import { AgentParseError } from "../../src/agents/types";
+import { buildClaudeReviewInvocation, parseClaudeIssues } from "../../src/agents/claude.js";
+import { AgentParseError } from "../../src/agents/types.js";
 
 const issue = {
   title: "Validate PR URLs",

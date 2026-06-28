@@ -10,7 +10,7 @@ import {
   readState,
   writeMeta,
   writeState
-} from "../src/state";
+} from "../src/state.js";
 
 const tmpRoots: string[] = [];
 

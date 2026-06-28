@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCliArgs } from "../src/cli";
+import { parseCliArgs } from "../src/cli.js";
 
 describe("CLI argument parsing", () => {
   it("defaults the start command to three rounds", () => {

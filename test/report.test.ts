@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { appendResolvedIssue, appendRoundCapNote } from "../src/report";
+import { appendResolvedIssue, appendRoundCapNote } from "../src/report.js";
 
 const baseIssue = {
   title: "Prevent off-by-one diff ranges",
@@ -50,7 +50,7 @@ describe("report markdown helpers", () => {
 
   it("renders each entry as Issue, Resolved by, then the two-sentence body", () => {
     const report = appendResolvedIssue("", baseEntry);
-    const meaningfulLines = report.split("\n").filter((line) => line.length > 0);
+    const meaningfulLines = report.split("\n").filter((line: string) => line.length > 0);
 
     expect(meaningfulLines).toEqual([
       "## Summary",

@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { buildCodexReviewInvocation, parseCodexIssues } from "../../src/agents/codex";
-import { AgentParseError } from "../../src/agents/types";
+import { buildCodexReviewInvocation, parseCodexIssues } from "../../src/agents/codex.js";
+import { AgentParseError } from "../../src/agents/types.js";
 
 const issue = {
   title: "Preserve report context",
