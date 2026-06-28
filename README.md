@@ -12,13 +12,8 @@
 Autonomous pull request code review for terminal-native workflows.
 
 `mendr` is a TypeScript CLI that orchestrates installed coding-agent CLIs as short-lived workers.
-Point it at a GitHub pull request, choose `claude` or `codex`, and it runs review and fix rounds until the review agent reports no remaining scoped issues or the configured round cap is reached.
-
-## Project Status
-
-`mendr` is pre-release software at version `0.0.0`.
-The repository currently contains the initial CLI, daemon, state, report, agent-driver, and test scaffolding for the planned npm-distributed tool.
-The public package target is `npm i -g mendr`.
+Point it at a GitHub pull request, choose `claude` or `codex`, and it continuously scans the PR for scoped issues.
+When it finds a problem, `mendr` launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
 
 ## Why mendr
 
@@ -50,6 +45,7 @@ mendr <agent> <pr>
 The review agent is responsible for finding issues strictly inside the pull request's changed scope.
 The fix agent is responsible for editing, committing, and pushing a fix for a single issue.
 The orchestrator owns the loop, persistence, status events, and final report.
+That loop is what lets `mendr` keep scanning the same pull request and autonomously push fixes until the review comes back clean.
 
 ## CLI
 
@@ -89,71 +85,25 @@ It does not collect API keys or manage model provider credentials.
 
 ## Installation
 
-The npm package is not published yet.
-For local development:
-
 ```sh
-npm ci
-npm run build
-npm link
+npm install -g mendr
 ```
 
-After linking, run:
+After installation, run:
 
 ```sh
 mendr --help
 ```
 
-## Repository Layout
-
-```text
-src/
-  cli.ts              CLI entry point and subcommands
-  daemon.ts           Detached worker entry point
-  orchestrator.ts     Review and fix loop
-  state.ts            File-backed review state and events
-  report.ts           Summary report builder
-  github.ts           gh wrapper helpers
-  git.ts              git wrapper helpers
-  exec.ts             Injectable process boundary
-  agents/
-    claude.ts         Claude Code driver
-    codex.ts          Codex driver
-    prompts.ts        Shared prompt construction
-    types.ts          Agent driver contracts
-test/
-  agents/             Agent parser and argument tests
-  integration/        Orchestrator and CLI integration tests
-  fixtures/           Real-shaped agent output fixtures
-```
-
-## State Model
-
-Each review has a durable directory under `~/.mendr/reviews/<id>/`.
-The state directory is the source of truth for list and view commands.
-
-```text
-~/.mendr/
-  reviews/
-    <id>/
-      meta.json
-      state.json
-      review.md
-      report.md
-      events.log
-      agent-io/
-```
-
-`meta.json` captures immutable run metadata such as agent, pull request, repository, branch, daemon process id, and max rounds.
-`state.json` captures the current phase, status, issue counts, completion state, and terminal errors.
-`events.log` is append-only JSONL for live status rendering.
-`agent-io/` stores raw agent stdout and stderr for debugging.
-
 ## Agent Session Model
 
+<p align="center">
+  <img src="assets/mendr-agent-session-model.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
+</p>
+
 Every review and fix step starts a new agent process.
-For Claude Code, the planned headless invocation uses `claude -p` with JSON output and repository access through `--add-dir`.
-For Codex, the planned headless invocation uses `codex exec` with `--sandbox workspace-write`, `-C <repo>`, and final-message capture.
+Claude Code sessions run through `claude -p` with JSON output and repository access through `--add-dir`.
+Codex sessions run through `codex exec` with `--sandbox workspace-write`, `-C <repo>`, and final-message capture.
 
 The orchestrator never uses `--continue`, `--resume`, or a reused agent process.
 This keeps each step isolated and releases memory when the child process exits.
@@ -175,7 +125,7 @@ When the round cap is reached or a fix fails, the report records that state inst
 
 ## Development
 
-Install dependencies:
+Clone the repository and install dependencies:
 
 ```sh
 npm ci
@@ -189,20 +139,9 @@ npm test
 npm run build
 ```
 
-The test suite is designed to be hermetic.
-External process calls go through `src/exec.ts`, and tests inject fakes instead of touching real GitHub, Git, or agent CLIs.
-
-## Testing Strategy
-
-The default suite covers unit, integration, and edge-case behavior.
-It verifies report idempotency, state JSON round trips, agent output parsing, CLI argument validation, orchestrator loop control, failure handling, and file-backed list and view behavior.
-
-E2E tests are gated behind `MENDR_E2E=1`.
-They require `gh`, `git`, `claude`, and `codex` to be installed and authenticated against a disposable GitHub test repository.
-
 ## Contributing
 
-Contributions are welcome while the project is still early, but changes should keep the orchestration model deterministic and testable.
+Contributions are welcome, and changes should keep the orchestration model deterministic and testable.
 Before opening a pull request:
 
 1. Create a focused branch.
