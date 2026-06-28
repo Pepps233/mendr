@@ -1,0 +1,5 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "result": "Review complete.\n\n```json\n[{\"title\":\"Validate PR URLs\",\"file\":\"src/cli.ts\",\"line\":44,\"severity\":\"medium\",\"description\":\"The parser accepts malformed pull request URLs.\"}]\n```\n"
+}
