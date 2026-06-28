@@ -1,7 +1,7 @@
 {
   "name": "mendr",
   "version": "0.0.0",
-  "description": "Autonomous PR code-review agent CLI scaffold.",
+  "description": "Autonomous PR review agent CLI scaffold.",
   "type": "module",
   "bin": {
     "mendr": "./dist/cli.js"
