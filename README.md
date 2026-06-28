@@ -11,16 +11,16 @@
 
 Autonomous PR code-review CLI that continuously scans pull requests and pushes fixes until no issues remain.
 
-`mendr` is a TypeScript CLI that orchestrates installed Codex or Claude Code CLIs as short-lived workers.
-It uses your existing Codex or Claude Code subscriptions through their local CLIs, so there are no API keys for `mendr` to collect or manage.
+**mendr** is a TypeScript CLI that orchestrates installed Codex or Claude Code CLIs as short-lived workers.
+It uses your existing Codex or Claude Code subscriptions through their local CLIs, so there are no API keys for **mendr** to collect or manage.
 Point it at a GitHub pull request, choose `claude` or `codex`, and it continuously scans the PR for scoped issues.
-When it finds a problem, `mendr` automates the review, fix, validate loop: it launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
+When it finds a problem, **mendr** automates the review, fix, validate loop: it launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
 
-## Why mendr
+## About mendr
 
 Autonomous code-review tools work best when scope is explicit, progress is inspectable, and the loop can keep running after the terminal closes.
-`mendr` is built with principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view), including repeated discovery, handoff, verification, persistence, and scheduling.
-`mendr` is designed around those constraints:
+**mendr** is built with principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view), including repeated discovery, handoff, verification, persistence, and scheduling.
+**mendr** is designed around those constraints:
 
 - It treats the main loop as deterministic TypeScript orchestration, not another long-running LLM session.
 - It launches a fresh one-shot review or fix agent process for each step.
@@ -49,7 +49,7 @@ mendr <agent> <pr>
 The review agent is responsible for finding issues strictly inside the pull request's changed scope.
 The fix agent is responsible for editing, committing, and pushing a fix for a single issue.
 The orchestrator owns the loop, persistence, status events, and final report.
-That loop is what lets `mendr` keep scanning the same pull request and autonomously push fixes until the review comes back clean.
+That loop is what lets **mendr** keep scanning the same pull request and autonomously push fixes until the review comes back clean.
 
 ## CLI
 
@@ -84,7 +84,7 @@ The review continues in the background, and `view` follows the file-backed statu
   - `claude` for Claude Code.
   - `codex` for Codex.
 
-`mendr` shells out to installed Codex or Claude Code CLIs and uses your existing subscriptions and local authentication.
+**mendr** shells out to installed Codex or Claude Code CLIs and uses your existing subscriptions and local authentication.
 It does not require API keys, collect credentials, or manage model provider secrets.
 
 ## Installation
@@ -159,5 +159,5 @@ Do not edit generated files manually.
 
 ## License
 
-`mendr` is released under the MIT License.
+**mendr** is released under the MIT License.
 See [LICENSE](LICENSE) for details.
