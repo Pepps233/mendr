@@ -9,21 +9,16 @@
 [![Language: TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6.svg)](tsconfig.json)
 [![CI](https://github.com/Pepps233/mendr/actions/workflows/ci.yml/badge.svg)](https://github.com/Pepps233/mendr/actions/workflows/ci.yml)
 
-Autonomous PR code-review CLI that continuously scans pull requests and pushes fixes until no issues remain.
+**mendr** is an autonomous PR code-review CLI that scans pull requests and pushes fixes until no issues remain. **mendr** orchestrates your installed Codex or Claude Code CLIs as short-lived workers, running through their local CLIs on your existing subscriptions, so there are no API keys to collect or manage. Point it at a GitHub pull request, choose `claude` or `codex`, and it scans the PR for scoped issues; when it finds a problem, it launches a fix agent, commits and pushes the fix, then reviews the PR again, repeating until the PR is clean or the configured round cap is reached.
 
-**mendr** is a TypeScript CLI that orchestrates installed Codex or Claude Code CLIs as short-lived workers.
-It uses your existing Codex or Claude Code subscriptions through their local CLIs, so there are no API keys for **mendr** to collect or manage.
-Point it at a GitHub pull request, choose `claude` or `codex`, and it continuously scans the PR for scoped issues.
-When it finds a problem, **mendr** automates the review, fix, validate loop: it launches a fix agent, commits and pushes the fix, then reviews the PR again until no issues are left or the configured round cap is reached.
+**mendr** is built on principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view): repeated discovery, handoff, verification, persistence, and scheduling. In practice, that means it:
 
-**mendr** is built with principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view), including repeated discovery, handoff, verification, persistence, and scheduling.
-**mendr** is designed around those constraints:
-- It treats the main loop as deterministic TypeScript orchestration, not another long-running LLM session.
-- It launches a fresh one-shot review or fix agent process for each step.
-- It automates the review, fix, validate cycle instead of leaving the user to manually reprompt agents.
-- It carries continuity through `report.md`, which is injected into every later prompt.
-- It writes review state to disk so `mendr ls` and `mendr view <id>` can inspect in-flight work.
-- It posts one final pull request summary comment instead of scattering review noise across the PR.
+- Treats the main loop as deterministic TypeScript orchestration, not another long-running LLM session.
+- Launches a fresh one-shot review or fix agent for each step.
+- Automates the review, fix, and validate cycle instead of leaving you to manually reprompt agents.
+- Carries context through `report.md`.
+- Writes review state to disk so `mendr ls` and `mendr view <id>` can inspect in-flight work.
+- Posts one final PR summary comment instead of scattering review noise across the PR.
 
 ## Agent Session Model
 
