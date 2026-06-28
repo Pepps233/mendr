@@ -1,0 +1,315 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { renderReviewList, renderReviewViewSnapshot, startReview } from "../../src/cli.js";
+
+type ExecResult = {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+};
+
+type ExecCall = {
+  command: string;
+  args: string[];
+  options?: unknown;
+};
+
+type StartReviewOptions = {
+  mendrHome: string;
+  cwd: string;
+  agent: "claude" | "codex";
+  pr: string;
+  maxRounds: number;
+  exec: FakePreflightExec["run"];
+  createId: () => string;
+  spawnDaemon: (args: unknown) => { pid: number; unref: () => void };
+};
+
+const tmpRoots: string[] = [];
+
+async function makeHome() {
+  const root = await mkdtemp(join(tmpdir(), "mendr-cli-edge-"));
+  tmpRoots.push(root);
+  return root;
+}
+
+async function listReviewDirs(home: string) {
+  try {
+    return await readdir(join(home, "reviews"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+async function seedReview(home: string, id: string) {
+  const reviewDir = join(home, "reviews", id);
+
+  await mkdir(reviewDir, { recursive: true });
+  await writeFile(
+    join(reviewDir, "meta.json"),
+    JSON.stringify(
+      {
+        id,
+        agent: "claude",
+        pr: "42",
+        repo: "/work/mendr",
+        branch: "feature/review",
+        startedAt: "2026-06-28T17:00:00.000Z",
+        pid: 999999,
+        maxRounds: 3
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(
+    join(reviewDir, "state.json"),
+    JSON.stringify(
+      {
+        phase: "fixing",
+        currentStatus: "Resolving issues",
+        issuesFound: 2,
+        issuesFixed: 1,
+        done: false,
+        capReached: false
+      },
+      null,
+      2
+    )
+  );
+  await writeFile(
+    join(reviewDir, "events.log"),
+    [
+      {
+        status: "Discovering bugs",
+        detail: "review round 1",
+        ts: "2026-06-28T17:00:00.000Z"
+      },
+      {
+        status: "Resolving issues",
+        detail: "fixing issue 1",
+        ts: "2026-06-28T17:00:01.000Z"
+      }
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n")
+  );
+
+  return reviewDir;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = 100) {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error("timed out waiting for file-backed view")), timeoutMs);
+    })
+  ]);
+}
+
+class FakePreflightExec {
+  readonly calls: ExecCall[] = [];
+
+  constructor(
+    private readonly options: {
+      missingBinary?: string;
+      ghUnauthenticated?: boolean;
+    } = {}
+  ) {}
+
+  run = async (
+    command: string,
+    args: string[],
+    options?: unknown
+  ): Promise<ExecResult> => {
+    this.calls.push({ command, args, options });
+
+    if (command === this.options.missingBinary) {
+      throw Object.assign(new Error(`${command} not found`), {
+        code: "ENOENT"
+      });
+    }
+
+    if (command === "git" && args[0] === "rev-parse" && args[1] === "--show-toplevel") {
+      return { stdout: "/work/mendr", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "branch" && args[1] === "--show-current") {
+      return { stdout: "feature/review", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "gh" && args[0] === "auth" && args[1] === "status") {
+      return {
+        stdout: "",
+        stderr: this.options.ghUnauthenticated ? "not logged in" : "",
+        exitCode: this.options.ghUnauthenticated ? 1 : 0
+      };
+    }
+
+    if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      return {
+        stdout: JSON.stringify({
+          number: 42,
+          url: "https://github.com/acme/mendr/pull/42"
+        }),
+        stderr: "",
+        exitCode: 0
+      };
+    }
+
+    if (
+      (command === "gh" || command === "git" || command === "claude" || command === "codex") &&
+      args[0] === "--version"
+    ) {
+      return { stdout: `${command} version 1.0.0`, stderr: "", exitCode: 0 };
+    }
+
+    throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+  };
+}
+
+function makeStartOptions(
+  overrides: Partial<StartReviewOptions> & {
+    mendrHome: string;
+    exec: FakePreflightExec["run"];
+  }
+): StartReviewOptions {
+  return {
+    mendrHome: overrides.mendrHome,
+    cwd: "/work/mendr",
+    agent: "claude",
+    pr: "42",
+    maxRounds: 3,
+    createId: () => "swift-otter-3f9a",
+    spawnDaemon: () => ({
+      pid: 43210,
+      unref: vi.fn()
+    }),
+    ...overrides
+  };
+}
+
+afterEach(async () => {
+  await Promise.all(
+    tmpRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))
+  );
+});
+
+describe("CLI edge and failure handling", () => {
+  it.each([
+    { missingBinary: "gh", agent: "claude" as const, expected: /gh.*not found/i },
+    { missingBinary: "git", agent: "claude" as const, expected: /git.*not found/i },
+    { missingBinary: "claude", agent: "claude" as const, expected: /claude.*not found/i },
+    { missingBinary: "codex", agent: "codex" as const, expected: /codex.*not found/i }
+  ])(
+    "fails preflight without creating a review dir when $missingBinary is unavailable",
+    async ({ missingBinary, agent, expected }) => {
+      const home = await makeHome();
+      const exec = new FakePreflightExec({ missingBinary });
+
+      await expect(
+        startReview(
+          makeStartOptions({
+            mendrHome: home,
+            agent,
+            exec: exec.run
+          })
+        )
+      ).rejects.toThrow(expected);
+
+      await expect(listReviewDirs(home)).resolves.toEqual([]);
+    }
+  );
+
+  it("fails preflight with an actionable auth message when gh is not logged in", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec({ ghUnauthenticated: true });
+
+    await expect(
+      startReview(
+        makeStartOptions({
+          mendrHome: home,
+          exec: exec.run
+        })
+      )
+    ).rejects.toThrow(/gh auth login/i);
+
+    await expect(listReviewDirs(home)).resolves.toEqual([]);
+  });
+
+  it("uses file-backed state so view and ls do not hang after a daemon crash", async () => {
+    const home = await makeHome();
+    const id = "crashed-daemon-6e21";
+
+    await seedReview(home, id);
+
+    const table = await withTimeout(renderReviewList({ mendrHome: home }));
+    const snapshot = await withTimeout(
+      renderReviewViewSnapshot({
+        mendrHome: home,
+        reviewId: id
+      })
+    );
+
+    expect(table).toContain(id);
+    expect(table).toContain("Resolving issues");
+    expect(snapshot).toMatchObject({
+      done: false,
+      currentStatus: "Resolving issues"
+    });
+    expect(snapshot.frame).toContain("Resolving issues");
+  });
+
+  it("creates distinct state directories for concurrent reviews", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+    const spawnDaemon = vi.fn(() => ({
+      pid: 43210,
+      unref: vi.fn()
+    }));
+
+    await Promise.all([
+      startReview(
+        makeStartOptions({
+          mendrHome: home,
+          pr: "42",
+          createId: () => "swift-otter-3f9a",
+          exec: exec.run,
+          spawnDaemon
+        })
+      ),
+      startReview(
+        makeStartOptions({
+          mendrHome: home,
+          pr: "77",
+          createId: () => "steady-moon-2ab1",
+          exec: exec.run,
+          spawnDaemon
+        })
+      )
+    ]);
+
+    const dirs = await listReviewDirs(home);
+    const firstMeta = JSON.parse(
+      await readFile(join(home, "reviews", "swift-otter-3f9a", "meta.json"), "utf8")
+    );
+    const secondMeta = JSON.parse(
+      await readFile(join(home, "reviews", "steady-moon-2ab1", "meta.json"), "utf8")
+    );
+    const table = await renderReviewList({ mendrHome: home });
+
+    expect(dirs.sort()).toEqual(["steady-moon-2ab1", "swift-otter-3f9a"]);
+    expect(firstMeta).toMatchObject({ id: "swift-otter-3f9a", pr: "42" });
+    expect(secondMeta).toMatchObject({ id: "steady-moon-2ab1", pr: "77" });
+    expect(table).toContain("swift-otter-3f9a");
+    expect(table).toContain("steady-moon-2ab1");
+    expect(spawnDaemon).toHaveBeenCalledTimes(2);
+  });
+});
