@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCodexFixInvocation,
   buildCodexReviewInvocation,
+  parseCodexFixResults,
   parseCodexIssues
 } from "../../src/agents/codex.js";
 import { buildFixPrompt, buildReviewPrompt } from "../../src/agents/prompts.js";
@@ -16,6 +17,16 @@ const issue = {
   line: 88,
   severity: "high",
   description: "The next review round must receive the updated report markdown."
+};
+
+const fixResult = {
+  title: "Preserve report context",
+  fingerprint:
+    "preserve report context|src/orchestrator.ts|88|the next review round must receive the updated report markdown.",
+  status: "fixed",
+  sha: "def5678",
+  summary:
+    "Threaded report markdown into the next review context. Added coverage for multi-round context handoff."
 };
 
 const reviewContext = {
@@ -49,6 +60,10 @@ describe("Codex agent driver", () => {
     expect(AgentParseError).toBeTypeOf("function");
     expect(AgentParseError.name).toBe("AgentParseError");
     expect(() => parseCodexIssues("No structured payload here.")).toThrow(AgentParseError);
+  });
+
+  it("parses fix results from the final message", () => {
+    expect(parseCodexFixResults(JSON.stringify([fixResult]))).toEqual([fixResult]);
   });
 
   it("builds the documented one-shot Codex review invocation", () => {

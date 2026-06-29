@@ -150,6 +150,8 @@ class ScriptedExec {
       diff?: string;
       shas?: Array<string | Error | null>;
       headReads?: Array<string | Error | null>;
+      emptyRevList?: boolean;
+      invalidVerifyShas?: string[];
       pushFailures?: number;
       commentFailures?: number;
     } = {}
@@ -210,6 +212,12 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "rev-parse" && args[1] === "--verify") {
+      const sha = args[2]?.replace(/\^\{commit\}$/, "") ?? "";
+
+      if (this.options.invalidVerifyShas?.includes(sha)) {
+        return { stdout: "", stderr: "unknown revision", exitCode: 1 };
+      }
+
       return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
     }
 
@@ -233,6 +241,10 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "rev-list") {
+      if (this.options.emptyRevList) {
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }
+
       return { stdout: this.readCommitRange(args[1] ?? ""), stderr: "", exitCode: 0 };
     }
 
@@ -328,19 +340,25 @@ class ScriptedAgentDriver {
       throw result;
     }
 
+    if (Array.isArray(result) && result.length === 0) {
+      return [];
+    }
+
     return issues.map((issue, index) => {
+      const defaultResult = {
+        summary:
+          "Fixed the changed range calculation. Added coverage for the boundary case."
+      };
       const scripted = Array.isArray(result)
-        ? result[index]
-        : result ?? {
-            summary:
-              "Fixed the changed range calculation. Added coverage for the boundary case."
-          };
+        ? result[index] ?? defaultResult
+        : result ?? defaultResult;
+      const hasExplicitSha = Object.prototype.hasOwnProperty.call(scripted, "sha");
 
       return {
         title: issue.title,
         fingerprint: issueFingerprint(issue),
         status: scripted.status ?? "fixed",
-        sha: scripted.status === "failed" ? undefined : scripted.sha ?? "abc1234",
+        sha: scripted.status === "failed" ? undefined : hasExplicitSha ? scripted.sha : "abc1234",
         summary: scripted.summary
       };
     });
@@ -608,6 +626,43 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
+  it("marks reported fix SHAs unresolved when git cannot verify them", async () => {
+    const home = await makeHome();
+    const id = "invalid-fix-sha-7a90";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      invalidVerifyShas: ["bad9999"],
+      shas: ["base0000", "valid111"],
+      headReads: ["base0000", "valid111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          sha: "bad9999",
+          summary:
+            "Reported a fix from an unverifiable commit. Expected mendr to reject that attribution."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/could not verify|unknown revision/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
   it("records failed fixer results and skips push", async () => {
     const home = await makeHome();
     const id = "commit-fail-2c33";
@@ -710,6 +765,134 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
+  it("marks fixes unresolved when the fixer omits a result for an issue", async () => {
+    const home = await makeHome();
+    const id = "missing-fix-result-8c10";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[rangeIssue], []], [[]]);
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("did not return a result");
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("marks fixes unresolved when the fixer reports fixed without a SHA", async () => {
+    const home = await makeHome();
+    const id = "missing-fix-sha-9df2";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      shas: ["base0000", "missing555"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          sha: undefined,
+          summary:
+            "Reported the range fix without a commit SHA. Expected mendr to keep the issue unresolved."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/without a commit SHA/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("marks fixes unresolved when the commit range is empty", async () => {
+    const home = await makeHome();
+    const id = "empty-commit-range-40cf";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      emptyRevList: true,
+      shas: ["base0000", "empty666"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          sha: "empty666",
+          summary:
+            "Reported a fixed range commit. Expected mendr to reject an empty commit range."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/rev-list did not return/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("retries a rejected push once and completes when the retry succeeds", async () => {
+    const home = await makeHome();
+    const id = "push-retry-success-70be";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ pushFailures: 1, shas: ["base0000", "retry777"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          sha: "retry777",
+          summary:
+            "Fixed the range calculation. Added a regression test for the final line."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ done: boolean; error?: string }>(join(reviewDir, "state.json"));
+
+    expect(findCalls(exec.calls, "git", ["push"])).toHaveLength(2);
+    expect(reportMarkdown).toContain("- Resolved by: retry777");
+    expect(reportMarkdown).not.toMatch(/push failed/i);
+    expect(state).toMatchObject({ done: true });
+    expect(state.error).toBeUndefined();
+  });
+
   it("retries a rejected push once and records the push failure", async () => {
     const home = await makeHome();
     const id = "push-fail-0ae4";
@@ -773,6 +956,29 @@ describe("orchestrator edge and failure handling", () => {
     expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
     expect(state.currentStatus).toMatch(/posting review failed/i);
     expect(state.error).toMatch(/rate limit|comment/i);
+  });
+
+  it("retries a failed PR comment once and completes when the retry succeeds", async () => {
+    const home = await makeHome();
+    const id = "comment-retry-success-3ea7";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ commentFailures: 1 });
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const state = await readJson<{ done: boolean; currentStatus: string; error?: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(findCalls(exec.calls, "gh", ["pr", "comment", "42"])).toHaveLength(2);
+    expect(state).toMatchObject({ done: true, currentStatus: "Complete" });
+    expect(state.error).toBeUndefined();
   });
 
   it("surfaces malformed agent JSON as an agent failure instead of crashing", async () => {

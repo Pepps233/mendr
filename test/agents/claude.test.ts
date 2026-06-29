@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildClaudeFixInvocation,
   buildClaudeReviewInvocation,
+  parseClaudeFixResults,
   parseClaudeIssues
 } from "../../src/agents/claude.js";
 import {
@@ -21,6 +22,16 @@ const issue = {
   line: 44,
   severity: "medium",
   description: "The parser accepts malformed pull request URLs."
+};
+
+const fixResult = {
+  title: "Validate PR URLs",
+  fingerprint:
+    "validate pr urls|src/cli.ts|44|the parser accepts malformed pull request urls.",
+  status: "fixed",
+  sha: "abc1234",
+  summary:
+    "Tightened pull request URL parsing. Added coverage for malformed GitHub pull request URLs."
 };
 
 const reviewContext = {
@@ -41,6 +52,10 @@ describe("Claude agent driver", () => {
     });
 
     expect(parseClaudeIssues(envelope)).toEqual([issue]);
+  });
+
+  it("parses a raw JSON issue array when Claude omits the result envelope", () => {
+    expect(parseClaudeIssues(JSON.stringify([issue]))).toEqual([issue]);
   });
 
   it("extracts a fenced JSON issue array wrapped in prose", async () => {
@@ -72,6 +87,29 @@ describe("Claude agent driver", () => {
     expect(AgentParseError).toBeTypeOf("function");
     expect(AgentParseError.name).toBe("AgentParseError");
     expect(() => parseClaudeIssues(envelope)).toThrow(AgentParseError);
+  });
+
+  it("parses fix results from the result field", () => {
+    const envelope = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      result: JSON.stringify([fixResult])
+    });
+
+    expect(parseClaudeFixResults(envelope)).toEqual([fixResult]);
+  });
+
+  it("parses raw JSON fix result arrays when Claude omits the result envelope", () => {
+    expect(parseClaudeFixResults(JSON.stringify([fixResult]))).toEqual([fixResult]);
+  });
+
+  it("throws AgentParseError when Claude fix output has no result payload", () => {
+    const envelope = JSON.stringify({
+      type: "assistant",
+      message: "No structured payload here."
+    });
+
+    expect(() => parseClaudeFixResults(envelope)).toThrow(AgentParseError);
   });
 
   it("builds the documented one-shot Claude review invocation", () => {
