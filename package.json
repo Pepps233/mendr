@@ -13,6 +13,7 @@
     "build": "tsup src/cli.ts src/daemon.ts --format esm --dts --clean",
     "coverage": "vitest run --coverage",
     "test": "vitest run",
+    "test:e2e": "MENDR_E2E=1 vitest run test/e2e",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

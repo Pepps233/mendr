@@ -6,6 +6,7 @@ on:
       - main
       - build/**
       - feat/**
+      - test/**
   pull_request:
     branches:
       - main
@@ -52,8 +53,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Test
-        run: npm test
+      - name: Test with coverage
+        run: npm run coverage
 
   build:
     name: Build
