@@ -196,9 +196,13 @@ async function runAgentInvocation(
     label: string;
   }
 ): Promise<ExecResult> {
+  const stdoutFile = join(options.outputDir, `${options.label}.stdout.log`);
+  const stderrFile = join(options.outputDir, `${options.label}.stderr.log`);
   const result = await exec(invocation.command, invocation.args, {
     cwd: options.cwd,
-    timeoutMs: agentTimeoutMs()
+    timeoutMs: agentTimeoutMs(),
+    stdoutFile,
+    stderrFile
   });
 
   await writeAgentIo(options.outputDir, options.label, result);

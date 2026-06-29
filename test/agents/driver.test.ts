@@ -160,7 +160,9 @@ describe("agent driver IO logging", () => {
         exec: async (_command, _args, options) => {
           expect(options).toMatchObject({
             cwd: "/work/mendr",
-            timeoutMs: 50
+            timeoutMs: 50,
+            stdoutFile: join(outputDir, "claude-review-1.stdout.log"),
+            stderrFile: join(outputDir, "claude-review-1.stderr.log")
           });
 
           return {
