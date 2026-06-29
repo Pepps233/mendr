@@ -319,7 +319,7 @@ describe("CLI edge and failure handling", () => {
     const events = await readFile(join(reviewDir, "events.log"), "utf8");
     const table = await renderReviewList({ mendrHome: home });
 
-    expect(killProcess).toHaveBeenCalledWith(999999, "SIGTERM");
+    expect(killProcess).toHaveBeenCalledWith(-999999, "SIGTERM");
     expect(state).toMatchObject({
       phase: "stopped",
       currentStatus: "Stopped",

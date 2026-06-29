@@ -4,12 +4,14 @@ export type ExecResult = {
   stdout: string;
   stderr: string;
   exitCode: number;
+  timedOut?: boolean;
 };
 
 export type ExecOptions = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   input?: string;
+  timeoutMs?: number;
 };
 
 export type ExecFn = (
@@ -34,13 +36,15 @@ export const defaultExec: ExecFn = async (command, args, options = {}) => {
     cwd: options.cwd,
     env: options.env,
     input: options.input,
+    timeout: options.timeoutMs,
     reject: false
   });
 
   return {
     stdout: result.stdout,
     stderr: result.stderr,
-    exitCode: result.exitCode ?? 0
+    exitCode: result.exitCode ?? (result.timedOut ? 124 : 0),
+    timedOut: result.timedOut
   };
 };
 
@@ -61,6 +65,17 @@ export async function execOk(
 
 function formatCommandFailure(command: string, args: string[], result: ExecResult): string {
   const detail = result.stderr.trim() || result.stdout.trim() || `exit code ${result.exitCode}`;
+  const formattedCommand = [command, ...args.map(formatCommandArg)].join(" ");
 
-  return `${command} ${args.join(" ")} failed: ${detail}`;
+  if (result.timedOut) {
+    return `${formattedCommand} timed out: ${detail}`;
+  }
+
+  return `${formattedCommand} failed: ${detail}`;
+}
+
+function formatCommandArg(arg: string): string {
+  const normalized = arg.replace(/\s+/g, " ");
+
+  return normalized.length > 160 ? `${normalized.slice(0, 157)}...` : normalized;
 }

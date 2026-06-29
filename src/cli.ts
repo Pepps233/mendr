@@ -334,11 +334,11 @@ export async function stopReview(options: StopReviewOptions): Promise<void> {
 
   if (meta.pid > 0) {
     try {
-      killProcess(meta.pid, "SIGTERM");
-      detail = `Sent SIGTERM to daemon pid ${meta.pid}.`;
+      killProcess(-meta.pid, "SIGTERM");
+      detail = `Sent SIGTERM to daemon process group ${meta.pid}.`;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-        detail = `Daemon pid ${meta.pid} was not running.`;
+        detail = `Daemon process group ${meta.pid} was not running.`;
       } else {
         throw error;
       }

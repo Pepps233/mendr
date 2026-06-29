@@ -32,6 +32,7 @@ export type CreateAgentDriverOptions = {
 
 const codexEfforts = ["low", "medium", "high", "xhigh"] as const;
 const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const;
+const defaultAgentTimeoutMs = 10 * 60 * 1000;
 
 export function defaultModelForAgent(agent: AgentName): string {
   if (agent === "codex") {
@@ -64,6 +65,22 @@ export function allowedEffortsForAgent(agent: AgentName): readonly EffortLevel[]
 
 export function isEffortForAgent(agent: AgentName, effort: string): effort is EffortLevel {
   return (allowedEffortsForAgent(agent) as readonly string[]).includes(effort);
+}
+
+export function agentTimeoutMs(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const rawTimeout = env.MENDR_AGENT_TIMEOUT_MS;
+
+  if (rawTimeout === undefined) {
+    return defaultAgentTimeoutMs;
+  }
+
+  const timeout = Number(rawTimeout);
+
+  if (!Number.isInteger(timeout) || timeout < 0) {
+    throw new Error("Invalid MENDR_AGENT_TIMEOUT_MS. Expected a non-negative integer.");
+  }
+
+  return timeout === 0 ? undefined : timeout;
 }
 
 export function createAgentDriver(options: CreateAgentDriverOptions): AgentDriver {
@@ -179,7 +196,10 @@ async function runAgentInvocation(
     label: string;
   }
 ): Promise<ExecResult> {
-  const result = await exec(invocation.command, invocation.args, { cwd: options.cwd });
+  const result = await exec(invocation.command, invocation.args, {
+    cwd: options.cwd,
+    timeoutMs: agentTimeoutMs()
+  });
 
   await writeAgentIo(options.outputDir, options.label, result);
 
