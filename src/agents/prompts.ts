@@ -8,7 +8,7 @@ const fixSchema =
 
 export function buildReviewPrompt(ctx: ReviewContext): string {
   return [
-    "You are a review agent for a GitHub pull request.",
+    "You are a code review agent for a GitHub pull request.",
     "Review only changes in the provided PR diff.",
     "Do not report issues outside the changed scope.",
     "Look for security issues, correctness issues, maintainability issues, and unnecessary redundancies.",
@@ -36,7 +36,7 @@ export function buildFixPrompt(issues: Issue[], ctx: ReviewContext): string {
   }));
 
   return [
-    "You are a fixer agent for a GitHub pull request.",
+    "You are a code fixer agent for a GitHub pull request.",
     "Fix only the issues listed below and stay inside the changed PR scope.",
     "Use one fresh session to fix the full issue batch.",
     "Create incremental commits as you work, with one or more commits mapped back to the issues.",
