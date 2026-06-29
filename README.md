@@ -39,6 +39,8 @@ mendr view <id>
 mendr stop <id>
 ```
 
+![mendr](assets/mendr.gif)
+
 `agent` must be `claude` or `codex`.
 `pr` may be a pull request number or a pull request URL.
 `--rounds` and `-r` set the maximum review and fix iterations, with a default of `3`.
