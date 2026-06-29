@@ -490,6 +490,38 @@ describe("orchestrator integration", () => {
     ).toBe(true);
   });
 
+  it("pushes fixes to the persisted PR head repository remote", async () => {
+    const home = await makeHome();
+    const id = "fork-head-remote-7a11";
+    await seedReview(home, id, {
+      branchPushRemote: "https://github.com/contributor/mendr.git"
+    });
+    const exec = new FakeExec(["fork111"]);
+    const driver = new FakeAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the changed range in the fork worktree. Added coverage for the contributor branch push."
+        }
+      ],
+      exec
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "https://github.com/contributor/mendr.git",
+      "HEAD:feature/range-fix"
+    ]);
+  });
+
   it("records the round cap and still posts the report when issues remain", async () => {
     const home = await makeHome();
     const id = "capped-river-18ce";

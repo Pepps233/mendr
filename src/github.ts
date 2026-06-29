@@ -15,6 +15,7 @@ export type PullRequestDetails = {
 
 export type PullRequestHeadBranch = {
   branch: string;
+  branchPushRemote: string;
 };
 
 export async function fetchPullRequestDetails(
@@ -52,18 +53,37 @@ export async function fetchPullRequestHeadBranch(
   repo: string,
   pr: string
 ): Promise<PullRequestHeadBranch> {
-  const result = await execOk(exec, "gh", ["pr", "view", pr, "--json", "headRefName"], {
-    cwd: repo
-  });
-  const parsed = JSON.parse(result.stdout) as { headRefName?: unknown };
+  const result = await execOk(
+    exec,
+    "gh",
+    [
+      "pr",
+      "view",
+      pr,
+      "--json",
+      "headRefName,headRepository,baseRepository,headRepositoryOwner"
+    ],
+    {
+      cwd: repo
+    }
+  );
+  const parsed = JSON.parse(result.stdout) as {
+    headRefName?: unknown;
+    headRepository?: unknown;
+    baseRepository?: unknown;
+    headRepositoryOwner?: unknown;
+  };
   const branch = typeof parsed.headRefName === "string" ? parsed.headRefName.trim() : "";
 
   if (branch.length === 0) {
     throw new Error("Could not resolve the pull request head branch from GitHub.");
   }
 
+  const branchPushRemote = resolveBranchPushRemote(parsed);
+
   return {
-    branch
+    branch,
+    branchPushRemote
   };
 }
 
@@ -106,4 +126,112 @@ function renderComment(comment: PullRequestComment): string {
   const body = comment.body?.trim() || "(empty comment)";
 
   return `- @${author}: ${body}`;
+}
+
+type RepositoryInfo = {
+  nameWithOwner?: string;
+  url?: string;
+  sshUrl?: string;
+};
+
+function resolveBranchPushRemote(input: {
+  headRepository?: unknown;
+  baseRepository?: unknown;
+  headRepositoryOwner?: unknown;
+}): string {
+  const headRepository = readRepositoryInfo(input.headRepository, input.headRepositoryOwner);
+  const baseRepository = readRepositoryInfo(input.baseRepository);
+
+  if (!headRepository) {
+    throw new Error("Could not resolve the pull request head repository from GitHub.");
+  }
+
+  if (
+    headRepository.nameWithOwner &&
+    baseRepository?.nameWithOwner &&
+    headRepository.nameWithOwner === baseRepository.nameWithOwner
+  ) {
+    return "origin";
+  }
+
+  const remote = headRepository.sshUrl ?? normalizedGitUrl(headRepository.url);
+
+  if (remote) {
+    return remote;
+  }
+
+  if (headRepository.nameWithOwner) {
+    return `https://github.com/${headRepository.nameWithOwner}.git`;
+  }
+
+  throw new Error("Could not resolve the pull request head repository push remote from GitHub.");
+}
+
+function readRepositoryInfo(
+  value: unknown,
+  ownerFallback?: unknown
+): RepositoryInfo | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const nameWithOwner =
+    readString(value, "nameWithOwner") ??
+    readNameWithOwner(
+      readOwnerLogin(value.owner) ?? readOwnerLogin(ownerFallback),
+      readString(value, "name")
+    );
+  const url = readString(value, "url");
+  const sshUrl = readString(value, "sshUrl") ?? readString(value, "sshURL");
+
+  if (!nameWithOwner && !url && !sshUrl) {
+    return undefined;
+  }
+
+  return {
+    ...(nameWithOwner ? { nameWithOwner } : {}),
+    ...(url ? { url } : {}),
+    ...(sshUrl ? { sshUrl } : {})
+  };
+}
+
+function readNameWithOwner(
+  owner: string | undefined,
+  name: string | undefined
+): string | undefined {
+  if (!owner || !name) {
+    return undefined;
+  }
+
+  return `${owner}/${name}`;
+}
+
+function readOwnerLogin(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  return readString(value, "login");
+}
+
+function normalizedGitUrl(url: string | undefined): string | undefined {
+  if (!url) {
+    return undefined;
+  }
+
+  if (!/^https?:\/\//i.test(url)) {
+    return url;
+  }
+
+  return url.endsWith(".git") ? url : `${url}.git`;
+}
+
+function readString(value: Record<string, unknown>, key: string): string | undefined {
+  const raw = value[key];
+
+  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

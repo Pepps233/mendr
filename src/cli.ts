@@ -228,7 +228,7 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
   });
 
   const repo = await getRepoRoot(exec, cwd);
-  const { branch } = await fetchPullRequestHeadBranch(exec, repo, options.pr);
+  const { branch, branchPushRemote } = await fetchPullRequestHeadBranch(exec, repo, options.pr);
 
   await ensureMendrHome(mendrHome);
 
@@ -261,6 +261,7 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     pr: options.pr,
     repo,
     branch,
+    branchPushRemote,
     worktreePath,
     startedAt,
     pid: 0,
@@ -282,6 +283,7 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     pr: options.pr,
     repo,
     branch,
+    branchPushRemote,
     worktreePath,
     startedAt,
     pid: daemon.pid,

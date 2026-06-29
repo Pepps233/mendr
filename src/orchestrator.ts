@@ -205,6 +205,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
           report,
           reportPath,
           branch: meta.branch,
+          branchPushRemote: normalizeBranchPushRemote(meta.branchPushRemote),
           state
         });
 
@@ -261,6 +262,7 @@ async function runFixRound(input: {
   report: string;
   reportPath: string;
   branch: string;
+  branchPushRemote: string;
   state: ReviewState;
 }): Promise<RoundOutcome> {
   let report = input.report;
@@ -306,7 +308,7 @@ async function runFixRound(input: {
 
   if (fixedCount > 0) {
     try {
-      await pushWithRetry(input.exec, input.ctx.repo, input.branch);
+      await pushWithRetry(input.exec, input.ctx.repo, input.branchPushRemote, input.branch);
     } catch (error) {
       const message = errorToMessage(error);
       const failedReport = appendFailureNote(report, `push failed: ${message}`);
@@ -461,12 +463,23 @@ function normalizeCommitMessage(message: string | undefined): string | undefined
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
-async function pushWithRetry(exec: ExecFn, repo: string, branch: string): Promise<void> {
+async function pushWithRetry(
+  exec: ExecFn,
+  repo: string,
+  remote: string,
+  branch: string
+): Promise<void> {
   try {
-    await pushHeadToBranch(exec, repo, branch);
+    await pushHeadToBranch(exec, repo, remote, branch);
   } catch {
-    await pushHeadToBranch(exec, repo, branch);
+    await pushHeadToBranch(exec, repo, remote, branch);
   }
+}
+
+function normalizeBranchPushRemote(remote: string | undefined): string {
+  const normalized = remote?.trim();
+
+  return normalized && normalized.length > 0 ? normalized : "origin";
 }
 
 async function postReportWithRetry(

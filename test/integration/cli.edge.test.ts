@@ -131,6 +131,13 @@ class FakePreflightExec {
       ghUnauthenticated?: boolean;
       currentBranch?: string;
       headRefName?: string;
+      headRepository?: {
+        nameWithOwner: string;
+        url: string;
+      };
+      baseRepository?: {
+        nameWithOwner: string;
+      };
     } = {}
   ) {}
 
@@ -180,7 +187,14 @@ class FakePreflightExec {
         stdout: JSON.stringify({
           number: 42,
           url: "https://github.com/acme/mendr/pull/42",
-          headRefName: this.options.headRefName ?? "feature/review"
+          headRefName: this.options.headRefName ?? "feature/review",
+          headRepository: this.options.headRepository ?? {
+            nameWithOwner: "acme/mendr",
+            url: "https://github.com/acme/mendr"
+          },
+          baseRepository: this.options.baseRepository ?? {
+            nameWithOwner: "acme/mendr"
+          }
         }),
         stderr: "",
         exitCode: 0
@@ -323,6 +337,33 @@ describe("CLI edge and failure handling", () => {
       join(home, "worktrees", "session-1-pr-42"),
       "refs/mendr/pr-42/head"
     ]);
+  });
+
+  it("persists the fork head repository push remote", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec({
+      headRefName: "feature/review",
+      headRepository: {
+        nameWithOwner: "contributor/mendr",
+        url: "https://github.com/contributor/mendr"
+      },
+      baseRepository: {
+        nameWithOwner: "acme/mendr"
+      }
+    });
+
+    await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        exec: exec.run
+      })
+    );
+
+    const meta = JSON.parse(
+      await readFile(join(home, "reviews", "1", "meta.json"), "utf8")
+    ) as { branchPushRemote?: string };
+
+    expect(meta.branchPushRemote).toBe("https://github.com/contributor/mendr.git");
   });
 
   it("uses file-backed state so view and ls do not hang after a daemon crash", async () => {

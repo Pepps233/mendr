@@ -8,6 +8,7 @@ export type ReviewMeta = {
   pr: string;
   repo: string;
   branch: string;
+  branchPushRemote?: string;
   worktreePath?: string;
   startedAt: string;
   pid: number;

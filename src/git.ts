@@ -85,7 +85,8 @@ export async function resetWorktreeToCommit(
 export async function pushHeadToBranch(
   exec: ExecFn,
   repo: string,
+  remote: string,
   branch: string
 ): Promise<void> {
-  await execOk(exec, "git", ["push", "origin", `HEAD:${branch}`], { cwd: repo });
+  await execOk(exec, "git", ["push", remote, `HEAD:${branch}`], { cwd: repo });
 }
