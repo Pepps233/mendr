@@ -19,11 +19,11 @@ import type { AgentName, EffortLevel } from "./agents/types.js";
 import { defaultExec, execOk, type ExecFn } from "./exec.js";
 import {
   createDetachedWorktree,
-  getCurrentBranch,
+  fetchPullRequestHeadRef,
   getRepoRoot,
   removeWorktree
 } from "./git.js";
-import { validatePullRequest } from "./github.js";
+import { fetchPullRequestHeadBranch, validatePullRequest } from "./github.js";
 import {
   defaultMendrHome,
   reviewDir,
@@ -228,19 +228,14 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
   });
 
   const repo = await getRepoRoot(exec, cwd);
-  const branch = await getCurrentBranch(exec, repo);
-
-  if (branch.length === 0) {
-    throw new Error(
-      "mendr must start from a named branch so fixes can be pushed back to the PR branch."
-    );
-  }
+  const { branch } = await fetchPullRequestHeadBranch(exec, repo, options.pr);
 
   await ensureMendrHome(mendrHome);
 
   const id = options.createId?.() ?? (await createReviewId(mendrHome));
   const dir = reviewDir(mendrHome, id);
   const worktreePath = sessionWorktreePath(mendrHome, id, options.pr);
+  const worktreeRef = pullRequestHeadRef(options.pr);
   const startedAt = new Date().toISOString();
   const initialState: ReviewState = {
     phase: "starting",
@@ -253,7 +248,8 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
 
   try {
     await mkdir(worktreesDir(mendrHome), { recursive: true });
-    await createDetachedWorktree(exec, repo, worktreePath, branch);
+    await fetchPullRequestHeadRef(exec, repo, options.pr, worktreeRef);
+    await createDetachedWorktree(exec, repo, worktreePath, worktreeRef);
   } catch (error) {
     await closeReviewSession(mendrHome, id);
     throw error;
@@ -298,6 +294,10 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     id,
     reviewDir: dir
   };
+}
+
+function pullRequestHeadRef(pr: string): string {
+  return `refs/mendr/pr-${pr}/head`;
 }
 
 export async function renderReviewList(options: RenderReviewListOptions = {}): Promise<string> {

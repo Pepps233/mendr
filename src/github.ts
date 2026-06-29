@@ -13,6 +13,10 @@ export type PullRequestDetails = {
   comments: PullRequestComment[];
 };
 
+export type PullRequestHeadBranch = {
+  branch: string;
+};
+
 export async function fetchPullRequestDetails(
   exec: ExecFn,
   repo: string,
@@ -41,6 +45,26 @@ export async function fetchPullRequestDiff(
   const result = await execOk(exec, "gh", ["pr", "diff", pr], { cwd: repo });
 
   return result.stdout;
+}
+
+export async function fetchPullRequestHeadBranch(
+  exec: ExecFn,
+  repo: string,
+  pr: string
+): Promise<PullRequestHeadBranch> {
+  const result = await execOk(exec, "gh", ["pr", "view", pr, "--json", "headRefName"], {
+    cwd: repo
+  });
+  const parsed = JSON.parse(result.stdout) as { headRefName?: unknown };
+  const branch = typeof parsed.headRefName === "string" ? parsed.headRefName.trim() : "";
+
+  if (branch.length === 0) {
+    throw new Error("Could not resolve the pull request head branch from GitHub.");
+  }
+
+  return {
+    branch
+  };
 }
 
 export async function validatePullRequest(

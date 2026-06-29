@@ -129,6 +129,8 @@ class FakePreflightExec {
     private readonly options: {
       missingBinary?: string;
       ghUnauthenticated?: boolean;
+      currentBranch?: string;
+      headRefName?: string;
     } = {}
   ) {}
 
@@ -150,7 +152,11 @@ class FakePreflightExec {
     }
 
     if (command === "git" && args[0] === "branch" && args[1] === "--show-current") {
-      return { stdout: "feature/review", stderr: "", exitCode: 0 };
+      return { stdout: this.options.currentBranch ?? "feature/review", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "fetch") {
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "git" && args[0] === "worktree" && args[1] === "add") {
@@ -173,7 +179,8 @@ class FakePreflightExec {
       return {
         stdout: JSON.stringify({
           number: 42,
-          url: "https://github.com/acme/mendr/pull/42"
+          url: "https://github.com/acme/mendr/pull/42",
+          headRefName: this.options.headRefName ?? "feature/review"
         }),
         stderr: "",
         exitCode: 0
@@ -281,6 +288,41 @@ describe("CLI edge and failure handling", () => {
     expect(meta.model).toBe("gpt-5.4");
     expect(meta.effort).toBe("high");
     expect(meta.worktreePath).toBe(join(home, "worktrees", "session-1-pr-42"));
+  });
+
+  it("creates the session worktree from the PR head when the caller is on another branch", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec({
+      currentBranch: "main",
+      headRefName: "feature/review"
+    });
+
+    await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        exec: exec.run
+      })
+    );
+
+    const meta = JSON.parse(
+      await readFile(join(home, "reviews", "1", "meta.json"), "utf8")
+    ) as { branch?: string };
+
+    expect(meta.branch).toBe("feature/review");
+    expect(
+      exec.calls.find((call) => call.command === "git" && call.args[0] === "fetch")?.args
+    ).toEqual(["fetch", "origin", "+refs/pull/42/head:refs/mendr/pr-42/head"]);
+    expect(
+      exec.calls.find(
+        (call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "add"
+      )?.args
+    ).toEqual([
+      "worktree",
+      "add",
+      "--detach",
+      join(home, "worktrees", "session-1-pr-42"),
+      "refs/mendr/pr-42/head"
+    ]);
   });
 
   it("uses file-backed state so view and ls do not hang after a daemon crash", async () => {
@@ -396,10 +438,10 @@ describe("CLI edge and failure handling", () => {
       exec.calls.filter((call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "add")
     ).toEqual([
       expect.objectContaining({
-        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-1-pr-42"), "feature/review"]
+        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-1-pr-42"), "refs/mendr/pr-42/head"]
       }),
       expect.objectContaining({
-        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-2-pr-77"), "feature/review"]
+        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-2-pr-77"), "refs/mendr/pr-77/head"]
       })
     ]);
 

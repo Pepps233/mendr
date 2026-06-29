@@ -18,6 +18,17 @@ export async function getHeadCommitSha(exec: ExecFn, repo: string): Promise<stri
   return result.stdout.trim();
 }
 
+export async function fetchPullRequestHeadRef(
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  ref: string
+): Promise<void> {
+  await execOk(exec, "git", ["fetch", "origin", `+refs/pull/${pr}/head:${ref}`], {
+    cwd: repo
+  });
+}
+
 export async function createDetachedWorktree(
   exec: ExecFn,
   repo: string,
