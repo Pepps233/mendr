@@ -12,6 +12,12 @@ export async function getCurrentBranch(exec: ExecFn, repo: string): Promise<stri
   return result.stdout.trim();
 }
 
+export async function getHeadCommitSha(exec: ExecFn, repo: string): Promise<string> {
+  const result = await execOk(exec, "git", ["rev-parse", "HEAD"], { cwd: repo });
+
+  return result.stdout.trim();
+}
+
 export async function verifyCommitSha(
   exec: ExecFn,
   repo: string,

@@ -175,10 +175,6 @@ function parseFixIssueResult(value: unknown): FixIssueResult {
     throw new AgentParseError("Agent fix result has an invalid schema.");
   }
 
-  if (status === "fixed" && typeof sha !== "string") {
-    throw new AgentParseError("Fixed agent result must include a commit SHA.");
-  }
-
   return {
     title,
     fingerprint,

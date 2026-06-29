@@ -213,7 +213,7 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
-      const value = this.options.shas?.[this.shaIndex] ?? "abc1234";
+      const value = this.readHeadValue();
       this.shaIndex += 1;
 
       if (value instanceof Error) {
@@ -247,6 +247,23 @@ class ScriptedExec {
 
     throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
   };
+
+  private readHeadValue(): string | Error | null {
+    if (this.options.shas) {
+      const scripted = this.options.shas[Math.min(this.shaIndex, this.options.shas.length - 1)];
+
+      return scripted === undefined ? "abc1234" : scripted;
+    }
+
+    const fixIndex = Math.floor(this.shaIndex / 2);
+    const isAfterFix = this.shaIndex % 2 === 1;
+
+    if (!isAfterFix) {
+      return fixIndex === 0 ? "base0000" : "abc1234";
+    }
+
+    return "abc1234";
+  }
 }
 
 class ScriptedAgentDriver {
@@ -402,7 +419,7 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "late-review-crash-8df0";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec();
+    const exec = new ScriptedExec({ shas: ["base0000", "fixed111"] });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], new AgentParseFailure("Second review emitted malformed JSON")],
       [
@@ -439,7 +456,7 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "partial-fix-fail-1b76";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec();
+    const exec = new ScriptedExec({ shas: ["base0000", "ok2222"] });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, staleStateIssue], []],
       [
@@ -522,11 +539,78 @@ describe("orchestrator edge and failure handling", () => {
     );
   });
 
+  it("records fixer process crashes as unresolved issues and still posts the report", async () => {
+    const home = await makeHome();
+    const id = "fixer-crash-6d18";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [new Error("fix agent exited with code 1")]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ done: boolean; issuesFixed: number; error?: string }>(
+      join(reviewDir, "state.json")
+    );
+    const events = await readEvents(reviewDir);
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("fix agent exited with code 1");
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+    expect(state).toMatchObject({ done: true, issuesFixed: 0 });
+    expect(state.error).toBeUndefined();
+    expect(events.map((event) => event.status)).toEqual(
+      expect.arrayContaining(["Fix failed", "Complete"])
+    );
+  });
+
+  it("marks reported fixes unresolved when the fixer does not create a new commit", async () => {
+    const home = await makeHome();
+    const id = "unchanged-head-4e29";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "base0000"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Reported the range fix as complete. Expected mendr to verify that a new commit exists."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/HEAD did not change|new commit SHA/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
   it("retries a rejected push once and records the push failure", async () => {
     const home = await makeHome();
     const id = "push-fail-0ae4";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ pushFailures: 2 });
+    const exec = new ScriptedExec({ pushFailures: 2, shas: ["base0000", "push3333"] });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
       [
@@ -618,7 +702,7 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "duplicate-issue-39bf";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec();
+    const exec = new ScriptedExec({ shas: ["base0000", "dedupe444"] });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, { ...rangeIssue }], []],
       [
@@ -642,5 +726,28 @@ describe("orchestrator edge and failure handling", () => {
     expect(driver.fixContexts).toHaveLength(1);
     expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(1);
     expect(reportMarkdown).toContain("- Resolved by: dedupe444");
+  });
+
+  it("records startup failures that happen before PR fetching begins", async () => {
+    const home = await makeHome();
+    const id = "bad-meta-agent-23bb";
+    const reviewDir = await seedReview(home, id, { agent: "gemini" });
+    const exec = new ScriptedExec();
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/unsupported agent/i);
+
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(state.currentStatus).toBe("Orchestrator failed");
+    expect(state.error).toMatch(/unsupported agent/i);
+    expect(findCall(exec.calls, "gh", ["pr", "view"])).toBeUndefined();
   });
 });

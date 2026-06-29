@@ -121,6 +121,8 @@ class FakeExec {
 
   private shaIndex = 0;
 
+  private headReadIndex = 0;
+
   constructor(private readonly shas: string[] = ["abc1234"]) {}
 
   nextSha(): string {
@@ -175,6 +177,10 @@ class FakeExec {
       return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
     }
 
+    if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
+      return { stdout: this.readHeadSha(), stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "push") {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
@@ -185,6 +191,17 @@ class FakeExec {
 
     throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
   };
+
+  private readHeadSha(): string {
+    const fixIndex = Math.floor(this.headReadIndex / 2);
+    const isAfterFix = this.headReadIndex % 2 === 1;
+    const previousSha = fixIndex === 0 ? "base0000" : this.shas[Math.min(fixIndex - 1, this.shas.length - 1)];
+    const nextSha = this.shas[Math.min(fixIndex, this.shas.length - 1)];
+
+    this.headReadIndex += 1;
+
+    return isAfterFix ? nextSha : previousSha;
+  }
 }
 
 class FakeAgentDriver {
@@ -322,7 +339,7 @@ describe("orchestrator integration", () => {
     ]);
   });
 
-  it("passes the growing report markdown into each later review round", async () => {
+  it("passes report markdown into later review rounds without re-fixing repeated issues", async () => {
     const home = await makeHome();
     const id = "steady-moon-2ab1";
     const reviewDir = await seedReview(home, id);
@@ -334,11 +351,6 @@ describe("orchestrator integration", () => {
           sha: "aaa1111",
           summary:
             "Fixed the first changed range path. Added a regression test around the upper bound."
-        },
-        {
-          sha: "bbb2222",
-          summary:
-            "Closed the remaining changed range path. Added a second assertion for repeated reviews."
         }
       ]
     );
@@ -353,13 +365,11 @@ describe("orchestrator integration", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
 
     expect(driver.reviewContexts).toHaveLength(3);
-    expect(driver.fixContexts).toHaveLength(2);
+    expect(driver.fixContexts).toHaveLength(1);
     expect(driver.reviewContexts[1].reportMarkdown).toContain("aaa1111");
     expect(driver.reviewContexts[2].reportMarkdown).toContain("aaa1111");
-    expect(driver.reviewContexts[2].reportMarkdown).toContain("bbb2222");
-    expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(2);
+    expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(1);
     expect(reportMarkdown).toContain("- Resolved by: aaa1111");
-    expect(reportMarkdown).toContain("- Resolved by: bbb2222");
   });
 
   it("records the round cap and still posts the report when issues remain", async () => {

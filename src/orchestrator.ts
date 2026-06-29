@@ -12,7 +12,7 @@ import {
   type ReviewContext
 } from "./agents/types.js";
 import { defaultExec, type ExecFn } from "./exec.js";
-import { pushBranch, verifyCommitSha } from "./git.js";
+import { getHeadCommitSha, pushBranch, verifyCommitSha } from "./git.js";
 import {
   fetchPullRequestDetails,
   fetchPullRequestDiff,
@@ -43,37 +43,38 @@ type RoundOutcome = {
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
-  const meta = await readMeta(options.mendrHome, options.reviewId);
   const dir = reviewDir(options.mendrHome, options.reviewId);
   const reviewPath = join(dir, "review.md");
   const reportPath = join(dir, "report.md");
-  const agent = parseAgentName(meta.agent);
-  const model = defaultModelForAgent(agent);
-  const agentDriver =
-    options.agentDriver ??
-    createAgentDriver({
-      agent,
-      exec,
-      outputDir: join(dir, "agent-io")
-    });
   let state: ReviewState = {
-    phase: "reviewing",
-    currentStatus: "Discovering bugs",
+    phase: "starting",
+    currentStatus: "Starting",
     issuesFound: 0,
     issuesFixed: 0,
     done: false,
     capReached: false
   };
 
-  await mkdir(dir, { recursive: true });
-  await writeState(options.mendrHome, options.reviewId, state);
-
   try {
+    await mkdir(dir, { recursive: true });
+    await writeState(options.mendrHome, options.reviewId, state);
+
+    const meta = await readMeta(options.mendrHome, options.reviewId);
+    const agent = parseAgentName(meta.agent);
+    const model = defaultModelForAgent(agent);
+    const agentDriver =
+      options.agentDriver ??
+      createAgentDriver({
+        agent,
+        exec,
+        outputDir: join(dir, "agent-io")
+      });
     const details = await fetchPullRequestDetails(exec, meta.repo, meta.pr);
     await writeFile(reviewPath, renderReviewMarkdown(meta.pr, details), "utf8");
 
     let report = await readReport(reportPath);
     let openIssues: Issue[] = [];
+    const attemptedIssueFingerprints = new Set<string>();
 
     for (let round = 1; round <= meta.maxRounds; round += 1) {
       state = await updateStatus(options, state, {
@@ -119,34 +120,57 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       }
 
       openIssues = issues;
+      const newIssues = issues.filter(
+        (issue) => !attemptedIssueFingerprints.has(issueFingerprint(issue))
+      );
+      const repeatedIssues = issues.filter((issue) =>
+        attemptedIssueFingerprints.has(issueFingerprint(issue))
+      );
+
       state = await updateStatus(options, state, {
         phase: "fixing",
         currentStatus: "Resolving issues"
       });
       await appendEvent(options.mendrHome, options.reviewId, {
         status: "Resolving issues",
-        detail: `fix round ${round} with ${issues.length} issues`
+        detail:
+          newIssues.length > 0
+            ? `fix round ${round} with ${newIssues.length} new issues`
+            : `fix round ${round} skipped because all ${issues.length} issues were already attempted`
       });
 
-      const outcome = await runFixRound({
-        options,
-        exec,
-        agentDriver,
-        ctx: {
-          ...ctx,
-          reportMarkdown: report
-        },
-        issues,
-        report,
-        reportPath,
-        branch: meta.branch,
-        state
-      });
+      for (const issue of repeatedIssues) {
+        await appendEvent(options.mendrHome, options.reviewId, {
+          status: "Issue still open",
+          detail: `${issue.title} was already sent to the fixer in an earlier round`
+        });
+      }
 
-      report = outcome.report;
-      state = await updateStatus(options, state, {
-        issuesFixed: state.issuesFixed + outcome.fixedCount
-      });
+      if (newIssues.length > 0) {
+        for (const issue of newIssues) {
+          attemptedIssueFingerprints.add(issueFingerprint(issue));
+        }
+
+        const outcome = await runFixRound({
+          options,
+          exec,
+          agentDriver,
+          ctx: {
+            ...ctx,
+            reportMarkdown: report
+          },
+          issues: newIssues,
+          report,
+          reportPath,
+          branch: meta.branch,
+          state
+        });
+
+        report = outcome.report;
+        state = await updateStatus(options, state, {
+          issuesFixed: state.issuesFixed + outcome.fixedCount
+        });
+      }
 
       if (round === meta.maxRounds) {
         report = appendRoundCapNote(report, {
@@ -197,36 +221,56 @@ async function runFixRound(input: {
   branch: string;
   state: ReviewState;
 }): Promise<RoundOutcome> {
+  const beforeSha = await getHeadCommitSha(input.exec, input.ctx.repo);
   let rawResults: FixIssueResult[] = [];
 
   try {
     rawResults = await input.agentDriver.fix(input.issues, input.ctx);
   } catch (error) {
-    await fail(input.options, input.state, "Fix failed", error);
-    return {
-      report: input.report,
-      fixedCount: 0,
-      pushed: false
-    };
+    return recordFailedFixBatch(input, error);
   }
 
-  const results = normalizeFixResults(input.issues, rawResults);
-  const fixedResults = results.filter(
+  let results = normalizeFixResults(input.issues, rawResults);
+  const reportedFixedResults = results.filter((result) => result.status === "fixed");
+  let capturedSha: string | undefined;
+
+  if (reportedFixedResults.length > 0) {
+    try {
+      capturedSha = await captureFixCommitSha(input.exec, input.ctx.repo, beforeSha);
+    } catch (error) {
+      const message = errorToMessage(error);
+
+      results = results.map((result) =>
+        result.status === "fixed"
+          ? {
+              ...result,
+              status: "failed",
+              sha: undefined,
+              summary: fixedButUncommittedSummary(message)
+            }
+          : result
+      );
+    }
+  }
+
+  const resultsWithCapturedSha = results.map((result) =>
+    result.status === "fixed"
+      ? {
+          ...result,
+          sha: capturedSha
+        }
+      : result
+  );
+  const fixedResults = resultsWithCapturedSha.filter(
     (result): result is FixIssueResult & { sha: string } =>
       result.status === "fixed" && typeof result.sha === "string"
   );
   let report = input.report;
 
-  for (const result of fixedResults) {
-    try {
-      await verifyCommitSha(input.exec, input.ctx.repo, result.sha);
-    } catch (error) {
-      await fail(input.options, input.state, "Fix failed", error);
-    }
-  }
-
   for (const issue of input.issues) {
-    const result = results.find((candidate) => candidate.fingerprint === issueFingerprint(issue));
+    const result = resultsWithCapturedSha.find(
+      (candidate) => candidate.fingerprint === issueFingerprint(issue)
+    );
     const sha = result?.status === "fixed" && result.sha ? result.sha : "(failed)";
     const summary = result?.summary ?? "The fixer did not report a result. Manual follow-up is required.";
 
@@ -263,6 +307,67 @@ async function runFixRound(input: {
     fixedCount: fixedResults.length,
     pushed: fixedResults.length > 0
   };
+}
+
+async function recordFailedFixBatch(
+  input: {
+    options: RunOrchestratorOptions;
+    issues: Issue[];
+    report: string;
+    reportPath: string;
+  },
+  error: unknown
+): Promise<RoundOutcome> {
+  const message = errorToMessage(error);
+  let report = input.report;
+
+  for (const issue of input.issues) {
+    const summary = fixerCrashedSummary(message);
+
+    report = appendIssueResult(report, {
+      issue,
+      sha: "(failed)",
+      summary
+    });
+    await appendEvent(input.options.mendrHome, input.options.reviewId, {
+      status: "Fix failed",
+      detail: `${issue.title}: ${summary}`
+    });
+  }
+
+  await writeFile(input.reportPath, report, "utf8");
+
+  return {
+    report,
+    fixedCount: 0,
+    pushed: false
+  };
+}
+
+async function captureFixCommitSha(
+  exec: ExecFn,
+  repo: string,
+  beforeSha: string
+): Promise<string> {
+  const afterSha = await getHeadCommitSha(exec, repo);
+
+  if (afterSha.length === 0) {
+    throw new Error("git rev-parse HEAD returned an empty commit SHA.");
+  }
+
+  if (afterSha === beforeSha) {
+    throw new Error("the fixer reported fixed issues, but HEAD did not change.");
+  }
+
+  return verifyCommitSha(exec, repo, afterSha);
+}
+
+function fixerCrashedSummary(message: string): string {
+  return `The fixer failed before returning structured results. ${message}`;
+}
+
+function fixedButUncommittedSummary(message: string): string {
+  return `The fixer reported a fix, but mendr could not capture a new commit SHA. ${message}`;
 }
 
 async function pushWithRetry(exec: ExecFn, repo: string, branch: string): Promise<void> {

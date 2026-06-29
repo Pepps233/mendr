@@ -230,7 +230,7 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
 
 export async function renderReviewList(options: RenderReviewListOptions = {}): Promise<string> {
   const mendrHome = options.mendrHome ?? defaultMendrHome();
-  const rows: string[] = ["ID                  Agent   PR    Status                 Found  Fixed"];
+  const rows: string[] = ["ID                  Agent   PR    Phase      Status                 Found  Fixed"];
   let entries: string[];
 
   try {
@@ -255,6 +255,7 @@ export async function renderReviewList(options: RenderReviewListOptions = {}): P
           meta.id.padEnd(19),
           meta.agent.padEnd(7),
           meta.pr.padEnd(5),
+          state.phase.padEnd(10),
           state.currentStatus.padEnd(22),
           `${state.issuesFound} found`.padEnd(7),
           `${state.issuesFixed} fixed`
