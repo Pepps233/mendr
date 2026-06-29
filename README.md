@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mendr-banner.png" alt="mendr autonomous pull request review workflow banner" width="100%">
+  <img src="assets/mendr_pipeline.png" alt="mendr autonomous pull request review workflow banner" width="80%">
 </p>
 
 # mendr
@@ -9,7 +9,7 @@
 [![Language: TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6.svg)](tsconfig.json)
 [![CI](https://github.com/Pepps233/mendr/actions/workflows/ci.yml/badge.svg)](https://github.com/Pepps233/mendr/actions/workflows/ci.yml)
 
-**mendr** is an autonomous PR code-review CLI that scans pull requests and pushes fixes until no issues remain. **mendr** orchestrates your installed Codex or Claude Code CLIs as short-lived workers, running through their local CLIs on your existing subscriptions, so there are no API keys to collect or manage. Point it at a GitHub pull request, choose `claude` or `codex`, and it scans the PR for scoped issues; when it finds a problem, it launches a fix agent, commits and pushes the fix, then reviews the PR again, repeating until the PR is clean or the configured round cap is reached.
+**mendr** orchestrates your installed Codex or Claude Code CLIs as short-lived workers, running through their local CLIs on your existing subscriptions, so there are no API keys to collect or manage. Point it at a GitHub pull request, choose `claude` or `codex`, and it scans the PR for scoped issues; when it finds a problem, it launches a fix agent, commits and pushes the fix, then reviews the PR again, repeating until the PR is clean or the configured round cap is reached.
 
 **mendr** is built on principles from the [Loop Engineering paper](https://drive.google.com/file/d/1qzKI4DKnyHRpXK1J3ATPqwaqLc0iNu-M/view): repeated discovery, handoff, verification, persistence, and scheduling. In practice, that means it:
 
@@ -19,12 +19,6 @@
 - Carries context through `report.md`.
 - Writes review state to disk so `mendr ls` and `mendr view <id>` can inspect in-flight work.
 - Posts one final PR summary comment instead of scattering review noise across the PR.
-
-## Agent Session Model
-
-<p align="center">
-  <img src="assets/mendr_pipeline.png" alt="Diagram of mendr launching fresh review and fix agent sessions with report.md context until the pull request is clean" width="100%">
-</p>
 
 Every review and fix step starts a new agent process to isolate reviewer from fixer.
 Claude Code sessions run through `claude -p` with JSON output and repository access through `--add-dir`.
