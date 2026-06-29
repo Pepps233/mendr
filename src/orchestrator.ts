@@ -73,6 +73,16 @@ type SingleFixOutcome = {
   sha?: string;
 };
 
+type CommitMessageValidation =
+  | {
+      valid: true;
+      message: string;
+    }
+  | {
+      valid: false;
+      reason: string;
+    };
+
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
   const dir = reviewDir(options.mendrHome, options.reviewId);
@@ -365,14 +375,14 @@ async function runSingleIssueFix(input: {
     };
   }
 
-  const commitMessage = normalizeCommitMessage(result.commitMessage);
+  const commitMessage = validateCommitMessage(result.commitMessage);
 
-  if (!commitMessage) {
+  if (!commitMessage.valid) {
     await resetFailedIssue(input);
 
     return {
       status: "failed",
-      summary: missingCommitMessageSummary()
+      summary: invalidCommitMessageSummary(commitMessage.reason)
     };
   }
 
@@ -393,7 +403,7 @@ async function runSingleIssueFix(input: {
     const sha = await commitStaged(
       input.exec,
       input.ctx.repo,
-      commitMessage
+      commitMessage.message
     );
 
     return {
@@ -453,14 +463,173 @@ function noDiffSummary(): string {
   return "The fixer reported this issue as fixed, but did not leave any file changes to commit.";
 }
 
-function missingCommitMessageSummary(): string {
-  return "The fixer reported this issue as fixed, but did not provide a commit message.";
-}
-
-function normalizeCommitMessage(message: string | undefined): string | undefined {
+function validateCommitMessage(message: string | undefined): CommitMessageValidation {
   const normalized = message?.replace(/\r\n?/g, "\n").trim();
 
-  return normalized && normalized.length > 0 ? normalized : undefined;
+  if (!normalized) {
+    return {
+      valid: false,
+      reason: "the fixer did not provide a commit message"
+    };
+  }
+
+  if (normalized.includes("\0")) {
+    return {
+      valid: false,
+      reason: "commit messages must not contain NUL bytes"
+    };
+  }
+
+  const forbiddenReason = forbiddenCommitMessageReason(normalized);
+
+  if (forbiddenReason) {
+    return {
+      valid: false,
+      reason: forbiddenReason
+    };
+  }
+
+  const lines = normalized.split("\n");
+
+  if (lines.length !== 4) {
+    return {
+      valid: false,
+      reason:
+        "commit messages must contain a subject, a blank line, and exactly two bullet lines"
+    };
+  }
+
+  if (lines[1] !== "") {
+    return {
+      valid: false,
+      reason: "commit messages must separate the subject from the body with a blank line"
+    };
+  }
+
+  const subject = parseCommitSubject(lines[0]);
+
+  if (!subject) {
+    return {
+      valid: false,
+      reason:
+        "commit message subjects must match <type>(<scope>): <short imperative summary>"
+    };
+  }
+
+  if (subject.summary.endsWith(".")) {
+    return {
+      valid: false,
+      reason: "commit message summaries must not end with a period"
+    };
+  }
+
+  if (looksNonImperative(subject.summary)) {
+    return {
+      valid: false,
+      reason: "commit message summaries must be imperative"
+    };
+  }
+
+  if (!lines[2].startsWith("- ") || lines[2].trim() === "-") {
+    return {
+      valid: false,
+      reason: "commit message bodies must use a non-empty first bullet"
+    };
+  }
+
+  if (!lines[3].startsWith("- ") || lines[3].trim() === "-") {
+    return {
+      valid: false,
+      reason: "commit message bodies must use a non-empty second bullet"
+    };
+  }
+
+  return {
+    valid: true,
+    message: normalized
+  };
+}
+
+function invalidCommitMessageSummary(reason: string): string {
+  return `The fixer reported this issue as fixed, but its commit message is invalid: ${reason}.`;
+}
+
+function forbiddenCommitMessageReason(message: string): string | undefined {
+  const lines = message.split("\n");
+
+  if (lines.some((line) => /^co-authored-by\s*:/i.test(line.trim()))) {
+    return "commit messages must not include co-author lines";
+  }
+
+  if (/\b(?:ai|a\.i\.|openai|chatgpt|claude|anthropic|codex|providers?)\b/i.test(message)) {
+    return "commit messages must not include AI or provider references";
+  }
+
+  return undefined;
+}
+
+function parseCommitSubject(
+  line: string
+): { type: string; scope: string; summary: string } | undefined {
+  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([a-z][^\n]*)$/.exec(line);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const [, type, scope, summary] = match;
+
+  if (!summary.trim()) {
+    return undefined;
+  }
+
+  return {
+    type,
+    scope,
+    summary
+  };
+}
+
+function looksNonImperative(summary: string): boolean {
+  const firstWord = summary.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+
+  return [
+    "added",
+    "adding",
+    "adds",
+    "changed",
+    "changing",
+    "changes",
+    "created",
+    "creating",
+    "creates",
+    "fixed",
+    "fixing",
+    "fixes",
+    "handled",
+    "handling",
+    "handles",
+    "made",
+    "makes",
+    "prevented",
+    "preventing",
+    "prevents",
+    "recorded",
+    "recording",
+    "records",
+    "rejected",
+    "rejecting",
+    "rejects",
+    "updated",
+    "updating",
+    "updates",
+    "used",
+    "using",
+    "uses",
+    "validated",
+    "validating",
+    "validates"
+  ].includes(firstWord);
 }
 
 async function pushWithRetry(

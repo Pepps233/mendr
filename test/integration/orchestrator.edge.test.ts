@@ -1132,6 +1132,47 @@ describe("orchestrator edge and failure handling", () => {
     expect(reportMarkdown).toContain("Updated the parser boundary handling");
   });
 
+  it("marks fixed results with unsafe commit messages unresolved", async () => {
+    const home = await makeHome();
+    const id = "unsafe-commit-message-6c21";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "unsafe888"] });
+    const commitMessage = [
+      "fix(range): include final changed line",
+      "",
+      "- Updates range parsing to keep the upper bound in scope",
+      "- Makes the parent-created commit describe the actual code change",
+      "Co-authored-by: Claude <claude@example.com>"
+    ].join("\n");
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          commitMessage,
+          summary:
+            "Updated the parser boundary handling so changed ranges include the final modified line and remain stable across retries."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/commit message/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
   it("resets and fails a fix when the fixer creates an unrecorded commit", async () => {
     const home = await makeHome();
     const id = "fixer-created-commit-94c1";
