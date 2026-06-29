@@ -6,6 +6,22 @@ const issueSchema =
 const fixSchema =
   '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","sha":"commit sha","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
 
+export function buildReviewSystemPrompt(): string {
+  return [
+    "You are the REVIEW agent in the mendr pull request review loop.",
+    "Report only issues that are strictly inside the provided PR diff scope.",
+    "Respond only with JSON matching the requested issue schema."
+  ].join("\n");
+}
+
+export function buildFixSystemPrompt(): string {
+  return [
+    "You are the FIX agent in the mendr pull request review loop.",
+    "Fix only the supplied issue batch and stay inside the changed PR scope.",
+    "Respond only with JSON matching the requested fix-result schema."
+  ].join("\n");
+}
+
 export function buildReviewPrompt(ctx: ReviewContext): string {
   return [
     "You are a code review agent for a GitHub pull request.",

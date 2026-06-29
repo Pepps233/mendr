@@ -3,12 +3,18 @@ import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
+import { Command } from "commander";
+import { Box, Text, render, useApp } from "ink";
+import Spinner from "ink-spinner";
+import React, { useEffect, useState } from "react";
+
 import type { AgentName } from "./agents/types.js";
 import { defaultExec, execOk, type ExecFn } from "./exec.js";
 import { getCurrentBranch, getRepoRoot } from "./git.js";
 import { validatePullRequest } from "./github.js";
 import { defaultMendrHome, reviewDir, reviewsDir } from "./paths.js";
 import {
+  appendEvent,
   closeReviewSession,
   ensureMendrHome,
   readEvents,
@@ -78,8 +84,21 @@ export type RenderReviewViewOptions = {
 };
 
 export type ReviewViewSnapshot = ReviewState & {
+  reviewId: string;
+  agent: string;
+  pr: string;
+  recentEvents: string[];
   frame: string;
   spinner: string;
+};
+
+export type StopReviewOptions = RenderReviewViewOptions & {
+  killProcess?: (pid: number, signal?: NodeJS.Signals) => boolean;
+};
+
+export type LiveReviewViewOptions = RenderReviewViewOptions & {
+  pollIntervalMs?: number;
+  loadSnapshot?: (options: RenderReviewViewOptions) => Promise<ReviewViewSnapshot>;
 };
 
 const agents = new Set<AgentName>(["claude", "codex"]);
@@ -260,8 +279,7 @@ export async function renderReviewViewSnapshot(
   ]);
   const recentEvents = events
     .slice(-5)
-    .map((event) => `${event.status}: ${event.detail}`)
-    .join("\n");
+    .map((event) => `${event.status}: ${event.detail}`);
   const frame = [
     `Review ${meta.id}`,
     `Agent: ${meta.agent}`,
@@ -269,13 +287,17 @@ export async function renderReviewViewSnapshot(
     `Status: ${state.currentStatus}`,
     `Issues: ${state.issuesFound} found, ${state.issuesFixed} fixed`,
     state.capReached ? "Round cap reached" : "",
-    recentEvents
+    recentEvents.join("\n")
   ]
     .filter(Boolean)
     .join("\n");
 
   return {
     ...state,
+    reviewId: meta.id,
+    agent: meta.agent,
+    pr: meta.pr,
+    recentEvents,
     frame,
     spinner: state.done ? "" : "."
   };
@@ -283,6 +305,139 @@ export async function renderReviewViewSnapshot(
 
 export async function closeReview(options: RenderReviewViewOptions): Promise<void> {
   await closeReviewSession(options.mendrHome ?? defaultMendrHome(), options.reviewId);
+}
+
+export async function stopReview(options: StopReviewOptions): Promise<void> {
+  const mendrHome = options.mendrHome ?? defaultMendrHome();
+  const killProcess = options.killProcess ?? process.kill;
+  const [meta, state] = await Promise.all([
+    readMeta(mendrHome, options.reviewId),
+    readState(mendrHome, options.reviewId)
+  ]);
+  let detail = "No daemon pid was recorded.";
+
+  if (meta.pid > 0) {
+    try {
+      killProcess(meta.pid, "SIGTERM");
+      detail = `Sent SIGTERM to daemon pid ${meta.pid}.`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+        detail = `Daemon pid ${meta.pid} was not running.`;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  await writeState(mendrHome, options.reviewId, {
+    ...state,
+    phase: "stopped",
+    currentStatus: "Stopped",
+    done: true
+  });
+  await appendEvent(mendrHome, options.reviewId, {
+    status: "Stopped",
+    detail
+  });
+}
+
+export async function startLiveReviewView(options: LiveReviewViewOptions): Promise<void> {
+  const app = render(
+    React.createElement(ReviewView, {
+      mendrHome: options.mendrHome,
+      reviewId: options.reviewId,
+      pollIntervalMs: options.pollIntervalMs,
+      loadSnapshot: options.loadSnapshot
+    })
+  );
+
+  await app.waitUntilExit();
+}
+
+export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
+  const { exit } = useApp();
+  const loadSnapshot = props.loadSnapshot ?? renderReviewViewSnapshot;
+  const [snapshot, setSnapshot] = useState<ReviewViewSnapshot | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    let active = true;
+    let shouldExit = false;
+
+    async function refresh(): Promise<void> {
+      try {
+        const next = await loadSnapshot({
+          mendrHome: props.mendrHome,
+          reviewId: props.reviewId
+        });
+
+        if (!active) {
+          return;
+        }
+
+        setSnapshot(next);
+        setError(undefined);
+
+        if (next.done && !shouldExit) {
+          shouldExit = true;
+          setTimeout(() => exit(), 0);
+        }
+      } catch (refreshError) {
+        if (!active) {
+          return;
+        }
+
+        setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
+      }
+    }
+
+    void refresh();
+    const interval = setInterval(refresh, props.pollIntervalMs ?? 1000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [exit, loadSnapshot, props.mendrHome, props.pollIntervalMs, props.reviewId]);
+
+  if (error) {
+    return React.createElement(Text, { color: "red" }, error);
+  }
+
+  if (!snapshot) {
+    return React.createElement(
+      Text,
+      null,
+      React.createElement(Spinner, { type: "dots" }),
+      " Loading review..."
+    );
+  }
+
+  return React.createElement(
+    Box,
+    { flexDirection: "column" },
+    React.createElement(Text, { bold: true }, `Review ${snapshot.reviewId}`),
+    React.createElement(Text, null, `Agent: ${snapshot.agent}`),
+    React.createElement(Text, null, `PR: ${snapshot.pr}`),
+    React.createElement(
+      Text,
+      null,
+      snapshot.done ? "" : React.createElement(Spinner, { type: "dots" }),
+      snapshot.done ? "" : " ",
+      snapshot.currentStatus
+    ),
+    React.createElement(
+      Text,
+      null,
+      `Issues: ${snapshot.issuesFound} found, ${snapshot.issuesFixed} fixed`
+    ),
+    snapshot.capReached
+      ? React.createElement(Text, { color: "yellow" }, "Round cap reached")
+      : null,
+    ...snapshot.recentEvents.map((event) =>
+      React.createElement(Text, { key: event, dimColor: true }, event)
+    )
+  );
 }
 
 function isAgent(value: string | undefined): value is AgentName {
@@ -400,42 +555,80 @@ function createReviewId(): string {
 }
 
 async function main(argv: string[]): Promise<void> {
-  const parsed = parseCliArgs(argv);
+  const program = new Command();
 
-  if (!parsed.ok) {
-    console.error(parsed.error);
-    process.exitCode = parsed.exitCode;
-    return;
-  }
+  program
+    .name("mendr")
+    .description("Run an autonomous agentic review loop on a GitHub pull request.")
+    .argument("[agent]", "agent CLI to use: claude or codex")
+    .argument("[pr]", "pull request number or GitHub pull request URL")
+    .option("-r, --rounds <n>", "maximum review and fix iterations", "3")
+    .action(async (agent: string | undefined, prArg: string | undefined, options: { rounds: string }) => {
+      if (!agent && !prArg) {
+        program.help();
+      }
 
-  if (parsed.command === "ls") {
-    console.log(await renderReviewList());
-    return;
-  }
+      if (!isAgent(agent)) {
+        throw new Error("Unsupported agent. Expected claude or codex.");
+      }
 
-  if (parsed.command === "view") {
-    const snapshot = await renderReviewViewSnapshot({ reviewId: parsed.reviewId });
+      const pr = normalizePr(prArg);
 
-    console.log(snapshot.frame);
-    return;
-  }
+      if (!pr) {
+        throw new Error("Expected a pull request number or GitHub pull request URL.");
+      }
 
-  if (parsed.command === "close" || parsed.command === "stop") {
-    await closeReview({ reviewId: parsed.reviewId });
-    console.log(`Closed ${parsed.reviewId}`);
-    return;
-  }
+      const parsedRounds = parseRounds(["--rounds", options.rounds]);
 
-  if (parsed.command === "start") {
-    const result = await startReview({
-      agent: parsed.agent,
-      pr: parsed.pr,
-      maxRounds: parsed.maxRounds
+      if (!parsedRounds.ok) {
+        throw new Error(parsedRounds.error);
+      }
+
+      const result = await startReview({
+        agent,
+        pr,
+        maxRounds: parsedRounds.maxRounds
+      });
+
+      console.log(`Started ${result.id}`);
+      console.log(`View status: mendr view ${result.id}`);
+      console.log(result.reviewDir);
     });
 
-    console.log(`Started ${result.id}`);
-    console.log(result.reviewDir);
-  }
+  program
+    .command("ls")
+    .description("List review sessions.")
+    .action(async () => {
+      console.log(await renderReviewList());
+    });
+
+  program
+    .command("view")
+    .description("Watch a live review status view.")
+    .argument("<id>", "review id")
+    .action(async (reviewId: string) => {
+      await startLiveReviewView({ reviewId });
+    });
+
+  program
+    .command("stop")
+    .description("Stop a running review daemon and keep its state on disk.")
+    .argument("<id>", "review id")
+    .action(async (reviewId: string) => {
+      await stopReview({ reviewId });
+      console.log(`Stopped ${reviewId}`);
+    });
+
+  program
+    .command("close")
+    .description("Remove a review session from local state.")
+    .argument("<id>", "review id")
+    .action(async (reviewId: string) => {
+      await closeReview({ reviewId });
+      console.log(`Closed ${reviewId}`);
+    });
+
+  await program.parseAsync(argv);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

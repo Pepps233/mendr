@@ -54,7 +54,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
     createAgentDriver({
       agent,
       exec,
-      outputDir: join(dir, "agent-output")
+      outputDir: join(dir, "agent-io")
     });
   let state: ReviewState = {
     phase: "reviewing",

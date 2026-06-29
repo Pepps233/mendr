@@ -8,7 +8,12 @@ import {
   parseFixIssueResultArrayFromText,
   parseIssueArrayFromText
 } from "./types.js";
-import { buildFixPrompt, buildReviewPrompt } from "./prompts.js";
+import {
+  buildFixPrompt,
+  buildFixSystemPrompt,
+  buildReviewPrompt,
+  buildReviewSystemPrompt
+} from "./prompts.js";
 
 export function parseClaudeIssues(output: string): Issue[] {
   const envelope = extractJsonValue(output);
@@ -53,7 +58,9 @@ export function buildClaudeReviewInvocation(ctx: ReviewContext): AgentInvocation
       "--permission-mode",
       "acceptEdits",
       "--add-dir",
-      ctx.repo
+      ctx.repo,
+      "--append-system-prompt",
+      buildReviewSystemPrompt()
     ]
   };
 }
@@ -76,7 +83,9 @@ export function buildClaudeFixInvocation(
       "--permission-mode",
       "acceptEdits",
       "--add-dir",
-      ctx.repo
+      ctx.repo,
+      "--append-system-prompt",
+      buildFixSystemPrompt()
     ]
   };
 }

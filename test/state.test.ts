@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   appendEvent,
+  closeReviewSession,
   readEvents,
   readMeta,
   readState,
@@ -130,5 +131,38 @@ describe("state persistence helpers", () => {
     );
 
     await expect(readEvents(home, id)).resolves.toEqual([firstEvent, secondEvent]);
+  });
+
+  it("returns an empty event list when no event log exists", async () => {
+    const home = await makeHome();
+
+    await expect(readEvents(home, "missing-events-9f12")).resolves.toEqual([]);
+  });
+
+  it("surfaces unexpected event log read errors", async () => {
+    const home = await makeHome();
+    const id = "event-dir-58cd";
+    const reviewDir = join(home, "reviews", id);
+
+    await mkdir(join(reviewDir, "events.log"), { recursive: true });
+
+    await expect(readEvents(home, id)).rejects.toThrow();
+  });
+
+  it("closes a review session by removing its state directory", async () => {
+    const home = await makeHome();
+    const id = "closed-review-91ae";
+
+    await writeState(home, id, {
+      phase: "complete",
+      currentStatus: "Complete",
+      issuesFound: 1,
+      issuesFixed: 1,
+      done: true,
+      capReached: false
+    });
+    await closeReviewSession(home, id);
+
+    await expect(readState(home, id)).rejects.toThrow();
   });
 });

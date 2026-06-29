@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { renderReviewList, renderReviewViewSnapshot, startReview } from "../../src/cli.js";
+import {
+  renderReviewList,
+  renderReviewViewSnapshot,
+  startReview,
+  stopReview
+} from "../../src/cli.js";
 
 type ExecResult = {
   stdout: string;
@@ -265,6 +270,37 @@ describe("CLI edge and failure handling", () => {
       currentStatus: "Resolving issues"
     });
     expect(snapshot.frame).toContain("Resolving issues");
+  });
+
+  it("stops the daemon pid while preserving review state files", async () => {
+    const home = await makeHome();
+    const id = "stoppable-daemon-7f13";
+    const reviewDir = await seedReview(home, id);
+    const killProcess = vi.fn(() => true);
+
+    await stopReview({
+      mendrHome: home,
+      reviewId: id,
+      killProcess
+    });
+
+    const state = JSON.parse(await readFile(join(reviewDir, "state.json"), "utf8")) as {
+      phase: string;
+      currentStatus: string;
+      done: boolean;
+    };
+    const events = await readFile(join(reviewDir, "events.log"), "utf8");
+    const table = await renderReviewList({ mendrHome: home });
+
+    expect(killProcess).toHaveBeenCalledWith(999999, "SIGTERM");
+    expect(state).toMatchObject({
+      phase: "stopped",
+      currentStatus: "Stopped",
+      done: true
+    });
+    expect(events).toContain("Stopped");
+    expect(table).toContain(id);
+    expect(table).toContain("Stopped");
   });
 
   it("creates distinct state directories for concurrent reviews", async () => {
