@@ -1,7 +1,7 @@
 import { issueFingerprint, type Issue, type ReviewContext } from "./types.js";
 
 const issueSchema =
-  '[{"title":"short title","file":"path","line":1,"severity":"low|medium|high|critical","description":"specific finding"}]';
+  '[{"title":"specific standalone title","file":"path","line":1,"severity":"low|medium|high|critical","description":"two concise sentences describing the finding"}]';
 
 const fixSchema =
   '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","commitMessage":"<type>(<scope>): <short imperative summary>\\n\\n- <why this change was needed>\\n- <why this approach or impact matters>","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
@@ -30,6 +30,8 @@ export function buildReviewPrompt(ctx: ReviewContext): string {
     "Do not report issues outside the changed scope.",
     "Look for security issues, correctness issues, maintainability issues, and unnecessary redundancies.",
     "Return an empty JSON array when there are no changed-scope issues.",
+    "Use issue titles that are specific enough to stand alone in the final summary.",
+    "Use exactly two concise sentences for each issue description.",
     "respond ONLY with JSON matching this schema:",
     issueSchema,
     "",

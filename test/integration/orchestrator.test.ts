@@ -373,9 +373,10 @@ describe("orchestrator integration", () => {
     expect(reviewMarkdown).toContain(
       "Please make sure empty comments do not break the review."
     );
-    expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: abc1234");
+    expect(reportMarkdown.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
+    expect(reportMarkdown).toContain("### Resolved Issues");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `abc1234`");
     expect(JSON.parse(issuesJsonl.trim())).toMatchObject({
       sessionId: id,
       round: 1,
@@ -448,8 +449,8 @@ describe("orchestrator integration", () => {
     expect(driver.fixContexts).toHaveLength(1);
     expect(driver.reviewContexts[1].reportMarkdown).toContain("aaa1111");
     expect(driver.reviewContexts[2].reportMarkdown).toContain("aaa1111");
-    expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(1);
-    expect(reportMarkdown).toContain("- Resolved by: aaa1111");
+    expect(reportMarkdown.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(reportMarkdown).toContain("**Commit:** `aaa1111`");
   });
 
   it("runs every review, fix, commit, push, and comment from the session worktree", async () => {
@@ -552,8 +553,9 @@ describe("orchestrator integration", () => {
 
     expect(driver.reviewContexts).toHaveLength(1);
     expect(state).toMatchObject({ done: true, capReached: true });
-    expect(reportMarkdown).toContain("- Round cap reached after 1 round with 1 open issue.");
-    expect(reportMarkdown).toContain("- Open issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("### Round Cap");
+    expect(reportMarkdown).toContain("Reached after 1 round with 1 open issue:");
+    expect(reportMarkdown).toContain("- Prevent off-by-one diff ranges");
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
 

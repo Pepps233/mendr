@@ -88,13 +88,21 @@ mendr --help
 ## Report Format
 
 The final pull request comment is generated from `report.md`.
-The report starts with exactly one summary heading and appends one entry per resolved issue.
+The report starts with exactly one Mendr summary heading and groups resolved issues under a dedicated section.
 
 ```md
-## Summary
-- Issue: <issue found by review agent>
-- Resolved by: <commit sha>
-- <two sentences on how it was fixed>
+## Summary by Mendr
+
+### Resolved Issues
+
+#### <issue found by review agent>
+**Commit:** `<commit sha>`
+<two sentences on how it was fixed>
+
+### Round Cap
+
+Reached after <round count> rounds with <open issue count> open issues:
+- <open issue found by review agent>
 ```
 
 When the round cap is reached or a fix fails, the report records that state instead of claiming success.

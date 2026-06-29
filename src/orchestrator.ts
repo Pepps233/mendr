@@ -460,7 +460,7 @@ function fixerMovedHeadSummary(expectedSha: string, actualSha: string): string {
 }
 
 function noDiffSummary(): string {
-  return "The fixer reported this issue as fixed, but did not leave any file changes to commit.";
+  return "The fixer reported this issue as fixed, but did not leave any file changes to commit. Manual follow-up is required to determine whether the issue still needs a code change.";
 }
 
 function validateCommitMessage(message: string | undefined): CommitMessageValidation {
@@ -551,7 +551,7 @@ function validateCommitMessage(message: string | undefined): CommitMessageValida
 }
 
 function invalidCommitMessageSummary(reason: string): string {
-  return `The fixer reported this issue as fixed, but its commit message is invalid: ${reason}.`;
+  return `The fixer reported this issue as fixed, but its commit message is invalid: ${reason}. Manual follow-up is required before Mendr can safely record and push the fix.`;
 }
 
 function forbiddenCommitMessageReason(message: string): string | undefined {

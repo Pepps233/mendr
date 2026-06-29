@@ -42,7 +42,7 @@ const reviewContext = {
   effort: "xhigh" as const,
   diff: "diff --git a/src/orchestrator.ts b/src/orchestrator.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
-  reportMarkdown: "## Summary\n- Issue: Already fixed\n- Resolved by: abc1234"
+  reportMarkdown: "## Summary by Mendr\n\n### Resolved Issues\n\n#### Already fixed\n**Commit:** `abc1234`"
 };
 
 describe("Codex agent driver", () => {
@@ -101,6 +101,8 @@ describe("Codex agent driver", () => {
     expect(prompt).toContain("review agent");
     expect(prompt).toContain("security issues");
     expect(prompt).not.toContain("changed-scope bugs");
+    expect(prompt).toContain("specific enough to stand alone in the final summary");
+    expect(prompt).toContain("exactly two concise sentences for each issue description");
     expect(prompt).toContain("respond ONLY with JSON");
     expect(prompt).toContain(reviewContext.diff);
     expect(prompt).toContain(reviewContext.reportMarkdown);

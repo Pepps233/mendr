@@ -218,7 +218,7 @@ async function assertReviewCompleted(
     done: true,
     currentStatus: "Complete"
   });
-  expect(result.report.match(/^## Summary$/gm)).toHaveLength(1);
+  expect(result.report.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
   expect(result.events.map((event) => event.status)).toContain("Discovering bugs");
   expect(result.events.map((event) => event.status)).toContain("Posting review");
   expect(result.events.map((event) => event.status)).toContain("Complete");
@@ -233,9 +233,10 @@ async function assertReviewCompleted(
 
   if (options.expectFix) {
     expect(result.events.map((event) => event.status)).toContain("Resolving issues");
-    expect(result.report).toMatch(/- Issue: .+/);
-    expect(result.report).toMatch(/- Resolved by: [0-9a-f]{7,40}/);
-    expect(result.report).toMatch(/- [^\n]+\.\s+[^\n]+\./);
+    expect(result.report).toContain("### Resolved Issues");
+    expect(result.report).toMatch(/^#### .+/m);
+    expect(result.report).toMatch(/\*\*Commit:\*\* `[0-9a-f]{7,40}`/);
+    expect(result.report).toMatch(/^[^\n]+\.\s+[^\n]+\.$/m);
 
     await run("git", ["fetch", "origin", result.branch], {
       cwd: result.worktree,
