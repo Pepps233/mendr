@@ -1,5 +1,7 @@
+#!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -747,7 +749,26 @@ async function main(argv: string[]): Promise<void> {
   await program.parseAsync(argv);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+export function isCliEntrypoint(
+  invokedPath: string | undefined,
+  modulePath = fileURLToPath(import.meta.url)
+): boolean {
+  if (!invokedPath) {
+    return false;
+  }
+
+  if (invokedPath === modulePath) {
+    return true;
+  }
+
+  try {
+    return realpathSync(invokedPath) === realpathSync(modulePath);
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(process.argv[1])) {
   main(process.argv).catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

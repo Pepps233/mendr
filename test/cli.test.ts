@@ -1,6 +1,10 @@
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { parseCliArgs } from "../src/cli.js";
+import { isCliEntrypoint, parseCliArgs } from "../src/cli.js";
 
 describe("CLI argument parsing", () => {
   it("defaults the start command to three rounds", () => {
@@ -115,5 +119,31 @@ describe("CLI argument parsing", () => {
       exitCode: 1,
       error: expect.stringContaining("rounds")
     });
+  });
+});
+
+describe("CLI entrypoint detection", () => {
+  it("recognizes direct CLI execution", () => {
+    expect(isCliEntrypoint("/tmp/mendr/dist/cli.js", "/tmp/mendr/dist/cli.js")).toBe(true);
+  });
+
+  it("recognizes npm-linked CLI execution through a symlink", async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "mendr-cli-"));
+    const modulePath = join(tempDir, "dist-cli.js");
+    const invokedPath = join(tempDir, "mendr");
+
+    try {
+      await writeFile(modulePath, "", "utf8");
+      await symlink(modulePath, invokedPath);
+
+      expect(isCliEntrypoint(invokedPath, modulePath)).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects missing or unrelated CLI paths", () => {
+    expect(isCliEntrypoint(undefined, "/tmp/mendr/dist/cli.js")).toBe(false);
+    expect(isCliEntrypoint("/tmp/mendr/bin/mendr", "/tmp/mendr/dist/cli.js")).toBe(false);
   });
 });
