@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { appendResolvedIssue, appendRoundCapNote } from "../src/report.js";
+import {
+  appendFailureNote,
+  appendNoIssuesFound,
+  appendResolvedIssue,
+  appendRoundCapNote
+} from "../src/report.js";
 
 const baseIssue = {
   title: "Prevent off-by-one diff ranges",
@@ -88,5 +93,31 @@ describe("report markdown helpers", () => {
     expect(report).toContain("- Round cap reached after 1 round with 2 open issues.");
     expect(report).toContain("- Open issue: Prevent off-by-one diff ranges");
     expect(report).toContain("- Open issue: Retry rejected pushes");
+  });
+
+  it("appends no-issue and failure notes only once", () => {
+    const noIssues = appendNoIssuesFound("");
+    const duplicateNoIssues = appendNoIssuesFound(noIssues);
+    const failure = appendFailureNote("Existing report body", "push failed");
+    const duplicateFailure = appendFailureNote(failure, "push failed");
+
+    expect(duplicateNoIssues).toBe(noIssues);
+    expect(noIssues.match(/No changed-scope issues found/g)).toHaveLength(1);
+    expect(failure).toMatch(/^## Summary\nExisting report body\n\n- Failure: push failed\n$/);
+    expect(duplicateFailure).toBe(failure);
+  });
+
+  it("does not duplicate an existing round-cap note", () => {
+    const once = appendRoundCapNote("", {
+      maxRounds: 2,
+      openIssues: [baseIssue]
+    });
+    const twice = appendRoundCapNote(once, {
+      maxRounds: 2,
+      openIssues: [baseIssue]
+    });
+
+    expect(once).toContain("- Round cap reached after 2 rounds with 1 open issue.");
+    expect(twice).toBe(once);
   });
 });
