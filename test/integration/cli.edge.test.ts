@@ -153,6 +153,14 @@ class FakePreflightExec {
       return { stdout: "feature/review", stderr: "", exitCode: 0 };
     }
 
+    if (command === "git" && args[0] === "worktree" && args[1] === "add") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "worktree" && args[1] === "remove") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
     if (command === "gh" && args[0] === "auth" && args[1] === "status") {
       return {
         stdout: "",
@@ -195,7 +203,7 @@ function makeStartOptions(
     agent: "claude",
     pr: "42",
     maxRounds: 3,
-    createId: () => "swift-otter-3f9a",
+    createId: () => "1",
     spawnDaemon: () => ({
       pid: 43210,
       unref: vi.fn()
@@ -267,11 +275,12 @@ describe("CLI edge and failure handling", () => {
     );
 
     const meta = JSON.parse(
-      await readFile(join(home, "reviews", "swift-otter-3f9a", "meta.json"), "utf8")
-    ) as { model?: string; effort?: string };
+      await readFile(join(home, "reviews", "1", "meta.json"), "utf8")
+    ) as { model?: string; effort?: string; worktreePath?: string };
 
     expect(meta.model).toBe("gpt-5.4");
     expect(meta.effort).toBe("high");
+    expect(meta.worktreePath).toBe(join(home, "worktrees", "session-1-pr-42"));
   });
 
   it("uses file-backed state so view and ls do not hang after a daemon crash", async () => {
@@ -331,6 +340,29 @@ describe("CLI edge and failure handling", () => {
     expect(table).toContain("Stopped");
   });
 
+  it("refuses to close an active worktree-backed session", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+
+    await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        exec: exec.run
+      })
+    );
+
+    await expect(
+      closeReview({ mendrHome: home, reviewId: "1", exec: exec.run })
+    ).rejects.toThrow(/stop|complete/i);
+
+    await expect(listReviewDirs(home)).resolves.toEqual(["1"]);
+    expect(
+      exec.calls.find(
+        (call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "remove"
+      )
+    ).toBeUndefined();
+  });
+
   it("allocates integer ids and resets after all sessions are closed", async () => {
     const home = await makeHome();
     const exec = new FakePreflightExec();
@@ -360,9 +392,21 @@ describe("CLI edge and failure handling", () => {
     expect(first.id).toBe("1");
     expect(second.id).toBe("2");
     await expect(listReviewDirs(home).then((dirs) => dirs.sort())).resolves.toEqual(["1", "2"]);
+    expect(
+      exec.calls.filter((call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "add")
+    ).toEqual([
+      expect.objectContaining({
+        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-1-pr-42"), "feature/review"]
+      }),
+      expect.objectContaining({
+        args: ["worktree", "add", "--detach", join(home, "worktrees", "session-2-pr-77"), "feature/review"]
+      })
+    ]);
 
-    await closeReview({ mendrHome: home, reviewId: "1" });
-    await closeReview({ mendrHome: home, reviewId: "2" });
+    await stopReview({ mendrHome: home, reviewId: "1", killProcess: vi.fn(() => true) });
+    await stopReview({ mendrHome: home, reviewId: "2", killProcess: vi.fn(() => true) });
+    await closeReview({ mendrHome: home, reviewId: "1", exec: exec.run });
+    await closeReview({ mendrHome: home, reviewId: "2", exec: exec.run });
 
     const reset = await startReview(
       makeStartOptions({

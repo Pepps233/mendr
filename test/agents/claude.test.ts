@@ -174,6 +174,7 @@ describe("Claude agent driver", () => {
     );
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
-    expect(prompt).toContain("Do not include co-author lines");
+    expect(prompt).toContain("Do not create commits");
+    expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });

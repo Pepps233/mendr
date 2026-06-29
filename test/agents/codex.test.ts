@@ -126,6 +126,7 @@ describe("Codex agent driver", () => {
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
-    expect(prompt).toContain("Do not include co-author lines");
+    expect(prompt).toContain("Do not create commits");
+    expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });
