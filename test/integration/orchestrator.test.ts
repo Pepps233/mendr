@@ -24,6 +24,7 @@ type ReviewContext = {
 type FixResult = {
   status?: "fixed" | "failed";
   sha?: string;
+  commitMessage?: string;
   summary: string;
 };
 
@@ -116,20 +117,39 @@ function findCall(calls: ExecCall[], command: string, args: string[]) {
   );
 }
 
+function callCwd(call: ExecCall): string | undefined {
+  return (call.options as { cwd?: string } | undefined)?.cwd;
+}
+
+function callInput(call: ExecCall): string | undefined {
+  return (call.options as { input?: string } | undefined)?.input;
+}
+
+const defaultCommitMessage = [
+  "fix(range): include changed range end",
+  "",
+  "- Keeps the final modified line inside the reviewed diff range",
+  "- Covers boundary handling through the parent-created commit"
+].join("\n");
+
 class FakeExec {
   readonly calls: ExecCall[] = [];
 
-  private shaIndex = 0;
+  private readonly commitShas: string[];
 
-  private headReadIndex = 0;
+  private currentHead: string;
 
-  constructor(private readonly shas: string[] = ["abc1234"]) {}
+  private dirty = false;
 
-  nextSha(): string {
-    const sha = this.shas[Math.min(this.shaIndex, this.shas.length - 1)];
-    this.shaIndex += 1;
+  private commitIndex = 0;
 
-    return sha;
+  constructor(shas: string[] = ["abc1234"]) {
+    this.currentHead = shas.length > 1 ? shas[0] : "base0000";
+    this.commitShas = shas.length > 1 ? shas.slice(1) : shas;
+  }
+
+  markDirty(): void {
+    this.dirty = true;
   }
 
   run = async (
@@ -173,16 +193,36 @@ class FakeExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-parse" && args[1] === "--verify") {
-      return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
-    }
-
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
-      return { stdout: this.readHeadSha(), stderr: "", exitCode: 0 };
+      return { stdout: this.currentHead, stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-list") {
-      return { stdout: this.readCommitRange(args[1] ?? ""), stderr: "", exitCode: 0 };
+    if (command === "git" && args[0] === "status" && args[1] === "--porcelain") {
+      return { stdout: this.dirty ? " M src/range.ts" : "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "add" && args[1] === "-A") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "commit") {
+      this.currentHead =
+        this.commitShas[Math.min(this.commitIndex, this.commitShas.length - 1)] ?? "abc1234";
+      this.commitIndex += 1;
+      this.dirty = false;
+
+      return { stdout: `[detached HEAD ${this.currentHead}] fix`, stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "reset" && args[1] === "--hard") {
+      this.currentHead = args[2] ?? this.currentHead;
+      this.dirty = false;
+
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "clean" && args[1] === "-fdx") {
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "git" && args[0] === "push") {
@@ -195,31 +235,6 @@ class FakeExec {
 
     throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
   };
-
-  private readHeadSha(): string {
-    const fixIndex = Math.floor(this.headReadIndex / 2);
-    const isAfterFix = this.headReadIndex % 2 === 1;
-    const previousSha = fixIndex === 0 ? "base0000" : this.shas[Math.min(fixIndex - 1, this.shas.length - 1)];
-    const nextSha = this.shas[Math.min(fixIndex, this.shas.length - 1)];
-
-    this.headReadIndex += 1;
-
-    return isAfterFix ? nextSha : previousSha;
-  }
-
-  private readCommitRange(range: string): string {
-    const [beforeSha, afterSha] = range.split("..");
-    const afterIndex = this.shas.indexOf(afterSha);
-
-    if (afterIndex === -1) {
-      return afterSha;
-    }
-
-    const beforeIndex = this.shas.indexOf(beforeSha);
-    const startIndex = beforeIndex === -1 ? 0 : beforeIndex + 1;
-
-    return this.shas.slice(startIndex, afterIndex + 1).reverse().join("\n");
-  }
 }
 
 class FakeAgentDriver {
@@ -289,11 +304,19 @@ class FakeAgentDriver {
       };
     this.fixIndex += 1;
 
+    if (scripted.status !== "failed") {
+      this.exec?.markDirty();
+    }
+
     return issues.map((issue) => ({
       title: issue.title,
       fingerprint: issueFingerprint(issue),
       status: scripted.status ?? "fixed",
-      sha: scripted.status === "failed" ? undefined : scripted.sha ?? this.exec?.nextSha() ?? "abc1234",
+      sha: scripted.status === "failed" ? undefined : scripted.sha,
+      commitMessage:
+        scripted.status === "failed"
+          ? undefined
+          : scripted.commitMessage ?? defaultCommitMessage,
       summary: scripted.summary
     }));
   }
@@ -315,10 +338,17 @@ describe("orchestrator integration", () => {
       [[rangeIssue], []],
       [
         {
+          commitMessage: [
+            "fix(range): include changed range end",
+            "",
+            "- Makes changed range handling include the upper bound",
+            "- Covers the final modified line with a regression check"
+          ].join("\n"),
           summary:
             "Made the changed range inclusive at the upper bound. Added a regression check for the final modified line."
         }
-      ]
+      ],
+      exec
     );
 
     await runOrchestrator({
@@ -330,6 +360,8 @@ describe("orchestrator integration", () => {
 
     const reviewMarkdown = await readFile(join(reviewDir, "review.md"), "utf8");
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const issuesJsonl = await readFile(join(reviewDir, "issues.jsonl"), "utf8");
+    const fixesJsonl = await readFile(join(reviewDir, "fixes.jsonl"), "utf8");
     const state = await readJson<{ done: boolean; currentStatus: string }>(
       join(reviewDir, "state.json")
     );
@@ -341,9 +373,40 @@ describe("orchestrator integration", () => {
     expect(reviewMarkdown).toContain(
       "Please make sure empty comments do not break the review."
     );
-    expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: abc1234");
+    expect(reportMarkdown.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
+    expect(reportMarkdown).toContain("### Resolved Issues");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `abc1234`");
+    expect(JSON.parse(issuesJsonl.trim())).toMatchObject({
+      sessionId: id,
+      round: 1,
+      issueIndex: 1,
+      fingerprint: issueFingerprint(rangeIssue)
+    });
+    expect(JSON.parse(fixesJsonl.trim())).toMatchObject({
+      sessionId: id,
+      round: 1,
+      issueIndex: 1,
+      status: "fixed",
+      commitSha: "abc1234"
+    });
+    const commitCall = findCall(exec.calls, "git", ["commit"]);
+    const expectedCommitMessage = [
+      "fix(range): include changed range end",
+      "",
+      "- Makes changed range handling include the upper bound",
+      "- Covers the final modified line with a regression check"
+    ].join("\n");
+
+    expect(commitCall?.args).toEqual(["commit", "-F", "-"]);
+    expect(callInput(commitCall!)).toBe(`${expectedCommitMessage}\n`);
+    expect(callInput(commitCall!)).not.toContain("Resolve reviewed issue");
+    expect(callInput(commitCall!)).not.toContain(issueFingerprint(rangeIssue));
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "origin",
+      "HEAD:feature/range-fix"
+    ]);
     expect(commentCall?.args).toEqual(
       expect.arrayContaining(["--body-file", join(reviewDir, "report.md")])
     );
@@ -361,16 +424,16 @@ describe("orchestrator integration", () => {
     const home = await makeHome();
     const id = "steady-moon-2ab1";
     const reviewDir = await seedReview(home, id);
-    const exec = new FakeExec(["aaa1111", "bbb2222"]);
+    const exec = new FakeExec(["aaa1111"]);
     const driver = new FakeAgentDriver(
       [[rangeIssue], [rangeIssue], []],
       [
         {
-          sha: "aaa1111",
           summary:
             "Fixed the first changed range path. Added a regression test around the upper bound."
         }
-      ]
+      ],
+      exec
     );
 
     await runOrchestrator({
@@ -386,8 +449,78 @@ describe("orchestrator integration", () => {
     expect(driver.fixContexts).toHaveLength(1);
     expect(driver.reviewContexts[1].reportMarkdown).toContain("aaa1111");
     expect(driver.reviewContexts[2].reportMarkdown).toContain("aaa1111");
-    expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(1);
-    expect(reportMarkdown).toContain("- Resolved by: aaa1111");
+    expect(reportMarkdown.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(reportMarkdown).toContain("**Commit:** `aaa1111`");
+  });
+
+  it("runs every review, fix, commit, push, and comment from the session worktree", async () => {
+    const home = await makeHome();
+    const id = "1";
+    const worktreePath = join(home, "worktrees", "session-1-pr-42");
+    await seedReview(home, id, { worktreePath });
+    const exec = new FakeExec(["work111"]);
+    const driver = new FakeAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the changed range in the session worktree. Added coverage for the isolated checkout."
+        }
+      ],
+      exec
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    expect(driver.reviewContexts.map((ctx) => ctx.repo)).toEqual([worktreePath, worktreePath]);
+    expect(driver.fixContexts.map((entry) => entry.ctx.repo)).toEqual([worktreePath]);
+    expect(
+      exec.calls
+        .filter((call) => call.command === "gh" || call.command === "git")
+        .map(callCwd)
+    ).toEqual(expect.arrayContaining([worktreePath]));
+    expect(
+      exec.calls
+        .filter((call) => call.command === "gh" || call.command === "git")
+        .every((call) => callCwd(call) === worktreePath)
+    ).toBe(true);
+  });
+
+  it("pushes fixes to the persisted PR head repository remote", async () => {
+    const home = await makeHome();
+    const id = "fork-head-remote-7a11";
+    await seedReview(home, id, {
+      branchPushRemote: "https://github.com/contributor/mendr.git"
+    });
+    const exec = new FakeExec(["fork111"]);
+    const driver = new FakeAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the changed range in the fork worktree. Added coverage for the contributor branch push."
+        }
+      ],
+      exec
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "https://github.com/contributor/mendr.git",
+      "HEAD:feature/range-fix"
+    ]);
   });
 
   it("records the round cap and still posts the report when issues remain", async () => {
@@ -402,7 +535,8 @@ describe("orchestrator integration", () => {
           summary:
             "Applied the attempted changed range fix. Left the issue visible for the capped run summary."
         }
-      ]
+      ],
+      exec
     );
 
     await runOrchestrator({
@@ -419,8 +553,9 @@ describe("orchestrator integration", () => {
 
     expect(driver.reviewContexts).toHaveLength(1);
     expect(state).toMatchObject({ done: true, capReached: true });
-    expect(reportMarkdown).toContain("- Round cap reached after 1 round with 1 open issue.");
-    expect(reportMarkdown).toContain("- Open issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("### Round Cap");
+    expect(reportMarkdown).toContain("Reached after 1 round with 1 open issue:");
+    expect(reportMarkdown).toContain("- Prevent off-by-one diff ranges");
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
 

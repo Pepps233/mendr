@@ -18,7 +18,14 @@ import {
   type ReviewContext
 } from "./agents/types.js";
 import { defaultExec, type ExecFn } from "./exec.js";
-import { getHeadCommitSha, listCommitShasInRange, pushBranch, verifyCommitSha } from "./git.js";
+import {
+  commitStaged,
+  getHeadCommitSha,
+  getPorcelainStatus,
+  pushHeadToBranch,
+  resetWorktreeToCommit,
+  stageAll
+} from "./git.js";
 import {
   fetchPullRequestDetails,
   fetchPullRequestDiff,
@@ -32,7 +39,14 @@ import {
   appendRoundCapNote
 } from "./report.js";
 import { reviewDir } from "./paths.js";
-import { appendEvent, readMeta, writeState, type ReviewState } from "./state.js";
+import {
+  appendEvent,
+  appendFixAttempt,
+  appendIssueRecord,
+  readMeta,
+  writeState,
+  type ReviewState
+} from "./state.js";
 
 export type RunOrchestratorOptions = {
   mendrHome: string;
@@ -47,10 +61,27 @@ type RoundOutcome = {
   pushed: boolean;
 };
 
-type FixCommitWindow = {
-  afterSha: string;
-  commitShas: Set<string>;
+type IssueAttempt = {
+  issue: Issue;
+  round: number;
+  issueIndex: number;
 };
+
+type SingleFixOutcome = {
+  status: "fixed" | "failed";
+  summary: string;
+  sha?: string;
+};
+
+type CommitMessageValidation =
+  | {
+      valid: true;
+      message: string;
+    }
+  | {
+      valid: false;
+      reason: string;
+    };
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
@@ -74,6 +105,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
     const agent = parseAgentName(meta.agent);
     const model = meta.model ?? defaultModelForAgent(agent);
     const effort = resolveEffort(agent, meta.effort);
+    const sessionRepo = meta.worktreePath ?? meta.repo;
     const agentDriver =
       options.agentDriver ??
       createAgentDriver({
@@ -81,7 +113,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         exec,
         outputDir: join(dir, "agent-io")
       });
-    const details = await fetchPullRequestDetails(exec, meta.repo, meta.pr);
+    const details = await fetchPullRequestDetails(exec, sessionRepo, meta.pr);
     await writeFile(reviewPath, renderReviewMarkdown(meta.pr, details), "utf8");
 
     let report = await readReport(reportPath);
@@ -98,10 +130,10 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         detail: `review round ${round}`
       });
 
-      const diff = await fetchPullRequestDiff(exec, meta.repo, meta.pr);
+      const diff = await fetchPullRequestDiff(exec, sessionRepo, meta.pr);
       const reviewMarkdown = await readFile(reviewPath, "utf8");
       const ctx = buildContext({
-        repo: meta.repo,
+        repo: sessionRepo,
         pr: meta.pr,
         model,
         effort,
@@ -118,6 +150,8 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         return;
       }
 
+      await persistIssueRecords(options, round, issues);
+
       state = await updateStatus(options, state, {
         issuesFound: state.issuesFound + issues.length
       });
@@ -133,11 +167,16 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       }
 
       openIssues = issues;
-      const newIssues = issues.filter(
-        (issue) => !attemptedIssueFingerprints.has(issueFingerprint(issue))
+      const issueAttempts = issues.map((issue, index): IssueAttempt => ({
+        issue,
+        round,
+        issueIndex: index + 1
+      }));
+      const newIssues = issueAttempts.filter(
+        (attempt) => !attemptedIssueFingerprints.has(issueFingerprint(attempt.issue))
       );
-      const repeatedIssues = issues.filter((issue) =>
-        attemptedIssueFingerprints.has(issueFingerprint(issue))
+      const repeatedIssues = issueAttempts.filter((attempt) =>
+        attemptedIssueFingerprints.has(issueFingerprint(attempt.issue))
       );
 
       state = await updateStatus(options, state, {
@@ -152,7 +191,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
             : `fix round ${round} skipped because all ${issues.length} issues were already attempted`
       });
 
-      for (const issue of repeatedIssues) {
+      for (const { issue } of repeatedIssues) {
         await appendEvent(options.mendrHome, options.reviewId, {
           status: "Issue still open",
           detail: `${issue.title} was already sent to the fixer in an earlier round`
@@ -160,7 +199,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       }
 
       if (newIssues.length > 0) {
-        for (const issue of newIssues) {
+        for (const { issue } of newIssues) {
           attemptedIssueFingerprints.add(issueFingerprint(issue));
         }
 
@@ -176,6 +215,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
           report,
           reportPath,
           branch: meta.branch,
+          branchPushRemote: normalizeBranchPushRemote(meta.branchPushRemote),
           state
         });
 
@@ -203,7 +243,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       });
     }
 
-    await postReportWithRetry(options, exec, meta.repo, meta.pr, reportPath, state);
+    await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
 
     await updateStatus(options, state, {
       phase: "complete",
@@ -228,75 +268,57 @@ async function runFixRound(input: {
   exec: ExecFn;
   agentDriver: AgentDriver;
   ctx: ReviewContext;
-  issues: Issue[];
+  issues: IssueAttempt[];
   report: string;
   reportPath: string;
   branch: string;
+  branchPushRemote: string;
   state: ReviewState;
 }): Promise<RoundOutcome> {
-  const beforeSha = await getHeadCommitSha(input.exec, input.ctx.repo);
-  let rawResults: FixIssueResult[] = [];
-
-  try {
-    rawResults = await input.agentDriver.fix(input.issues, input.ctx);
-  } catch (error) {
-    return recordFailedFixBatch(input, error);
-  }
-
-  let results = normalizeFixResults(input.issues, rawResults);
-  const reportedFixedResults = results.filter((result) => result.status === "fixed");
-
-  if (reportedFixedResults.length > 0) {
-    try {
-      const commitWindow = await captureFixCommitWindow(input.exec, input.ctx.repo, beforeSha);
-
-      results = await validateFixResultShas(input.exec, input.ctx.repo, results, commitWindow);
-    } catch (error) {
-      const message = errorToMessage(error);
-
-      results = results.map((result) =>
-        result.status === "fixed"
-          ? {
-              ...result,
-              status: "failed",
-              sha: undefined,
-              summary: fixedButUncommittedSummary(message)
-            }
-          : result
-      );
-    }
-  }
-
-  const fixedResults = results.filter(
-    (result): result is FixIssueResult & { sha: string } =>
-      result.status === "fixed" && typeof result.sha === "string"
-  );
   let report = input.report;
+  let fixedCount = 0;
+  let lastSuccessfulSha = await getHeadCommitSha(input.exec, input.ctx.repo);
 
-  for (const issue of input.issues) {
-    const result = results.find((candidate) => candidate.fingerprint === issueFingerprint(issue));
-    const sha = result?.status === "fixed" && result.sha ? result.sha : "(failed)";
-    const summary = result?.summary ?? "The fixer did not report a result. Manual follow-up is required.";
+  for (const attempt of input.issues) {
+    const outcome = await runSingleIssueFix({
+      ...input,
+      attempt,
+      lastSuccessfulSha
+    });
+    const sha = outcome.status === "fixed" && outcome.sha ? outcome.sha : "(failed)";
 
     report = appendIssueResult(report, {
-      issue,
+      issue: attempt.issue,
       sha,
-      summary
+      summary: outcome.summary
+    });
+    await appendFixAttempt(input.options.mendrHome, input.options.reviewId, {
+      sessionId: input.options.reviewId,
+      round: attempt.round,
+      issueIndex: attempt.issueIndex,
+      fingerprint: issueFingerprint(attempt.issue),
+      title: attempt.issue.title,
+      status: outcome.status,
+      summary: outcome.summary,
+      ...(outcome.sha ? { commitSha: outcome.sha } : {})
     });
 
-    if (result?.status === "failed") {
+    if (outcome.status === "fixed" && outcome.sha) {
+      fixedCount += 1;
+      lastSuccessfulSha = outcome.sha;
+    } else {
       await appendEvent(input.options.mendrHome, input.options.reviewId, {
         status: "Fix failed",
-        detail: `${issue.title}: ${summary}`
+        detail: `${attempt.issue.title}: ${outcome.summary}`
       });
     }
   }
 
   await writeFile(input.reportPath, report, "utf8");
 
-  if (fixedResults.length > 0) {
+  if (fixedCount > 0) {
     try {
-      await pushWithRetry(input.exec, input.ctx.repo, input.branch);
+      await pushWithRetry(input.exec, input.ctx.repo, input.branchPushRemote, input.branch);
     } catch (error) {
       const message = errorToMessage(error);
       const failedReport = appendFailureNote(report, `push failed: ${message}`);
@@ -308,153 +330,325 @@ async function runFixRound(input: {
 
   return {
     report,
-    fixedCount: fixedResults.length,
-    pushed: fixedResults.length > 0
+    fixedCount,
+    pushed: fixedCount > 0
   };
 }
 
-async function recordFailedFixBatch(
-  input: {
-    options: RunOrchestratorOptions;
-    issues: Issue[];
-    report: string;
-    reportPath: string;
-  },
-  error: unknown
-): Promise<RoundOutcome> {
-  const message = errorToMessage(error);
-  let report = input.report;
+async function runSingleIssueFix(input: {
+  options: RunOrchestratorOptions;
+  exec: ExecFn;
+  agentDriver: AgentDriver;
+  ctx: ReviewContext;
+  attempt: IssueAttempt;
+  lastSuccessfulSha: string;
+  state: ReviewState;
+}): Promise<SingleFixOutcome> {
+  const { attempt } = input;
+  let rawResults: FixIssueResult[];
 
-  for (const issue of input.issues) {
-    const summary = fixerCrashedSummary(message);
+  try {
+    rawResults = await input.agentDriver.fix([attempt.issue], input.ctx);
+  } catch (error) {
+    await resetFailedIssue(input);
 
-    report = appendIssueResult(report, {
-      issue,
-      sha: "(failed)",
-      summary
-    });
-    await appendEvent(input.options.mendrHome, input.options.reviewId, {
-      status: "Fix failed",
-      detail: `${issue.title}: ${summary}`
-    });
+    return {
+      status: "failed",
+      summary: fixerCrashedSummary(errorToMessage(error))
+    };
   }
 
-  await writeFile(input.reportPath, report, "utf8");
+  const movedHeadOutcome = await failIfFixerMovedHead(input);
+
+  if (movedHeadOutcome) {
+    return movedHeadOutcome;
+  }
+
+  const result = normalizeFixResults([attempt.issue], rawResults)[0];
+
+  if (result.status === "failed") {
+    await resetFailedIssue(input);
+
+    return {
+      status: "failed",
+      summary: result.summary
+    };
+  }
+
+  const commitMessage = validateCommitMessage(result.commitMessage);
+
+  if (!commitMessage.valid) {
+    await resetFailedIssue(input);
+
+    return {
+      status: "failed",
+      summary: invalidCommitMessageSummary(commitMessage.reason)
+    };
+  }
+
+  const status = await getPorcelainStatus(input.exec, input.ctx.repo);
+
+  if (status.length === 0) {
+    await resetFailedIssue(input);
+
+    return {
+      status: "failed",
+      summary: noDiffSummary()
+    };
+  }
+
+  try {
+    await stageAll(input.exec, input.ctx.repo);
+
+    const sha = await commitStaged(
+      input.exec,
+      input.ctx.repo,
+      commitMessage.message
+    );
+
+    return {
+      status: "fixed",
+      summary: result.summary,
+      sha
+    };
+  } catch (error) {
+    return fail(input.options, input.state, "Commit failed", error);
+  }
+}
+
+async function resetFailedIssue(input: {
+  options: RunOrchestratorOptions;
+  exec: ExecFn;
+  ctx: ReviewContext;
+  lastSuccessfulSha: string;
+  state: ReviewState;
+}): Promise<void> {
+  try {
+    await resetWorktreeToCommit(input.exec, input.ctx.repo, input.lastSuccessfulSha);
+  } catch (error) {
+    await fail(input.options, input.state, "Worktree reset failed", error);
+  }
+}
+
+async function failIfFixerMovedHead(input: {
+  options: RunOrchestratorOptions;
+  exec: ExecFn;
+  ctx: ReviewContext;
+  lastSuccessfulSha: string;
+  state: ReviewState;
+}): Promise<SingleFixOutcome | undefined> {
+  const currentHead = await getHeadCommitSha(input.exec, input.ctx.repo);
+
+  if (currentHead === input.lastSuccessfulSha) {
+    return undefined;
+  }
+
+  await resetFailedIssue(input);
 
   return {
-    report,
-    fixedCount: 0,
-    pushed: false
+    status: "failed",
+    summary: fixerMovedHeadSummary(input.lastSuccessfulSha, currentHead)
   };
-}
-
-async function captureFixCommitWindow(
-  exec: ExecFn,
-  repo: string,
-  beforeSha: string
-): Promise<FixCommitWindow> {
-  const afterSha = await getHeadCommitSha(exec, repo);
-
-  if (afterSha.length === 0) {
-    throw new Error("git rev-parse HEAD returned an empty commit SHA.");
-  }
-
-  if (afterSha === beforeSha) {
-    throw new Error("the fixer reported fixed issues, but HEAD did not change.");
-  }
-
-  const verifiedAfterSha = await verifyCommitSha(exec, repo, afterSha);
-  const commitShas = new Set(await listCommitShasInRange(exec, repo, beforeSha, verifiedAfterSha));
-
-  if (commitShas.size === 0) {
-    throw new Error("git rev-list did not return any commits created by the fixer.");
-  }
-
-  return {
-    afterSha: verifiedAfterSha,
-    commitShas
-  };
-}
-
-async function validateFixResultShas(
-  exec: ExecFn,
-  repo: string,
-  results: FixIssueResult[],
-  commitWindow: FixCommitWindow
-): Promise<FixIssueResult[]> {
-  const validated: FixIssueResult[] = [];
-
-  for (const result of results) {
-    if (result.status !== "fixed") {
-      validated.push(result);
-      continue;
-    }
-
-    if (!result.sha) {
-      validated.push({
-        ...result,
-        status: "failed",
-        summary: missingFixShaSummary()
-      });
-      continue;
-    }
-
-    try {
-      const verifiedSha = await verifyCommitSha(exec, repo, result.sha);
-
-      if (!commitWindow.commitShas.has(verifiedSha)) {
-        validated.push({
-          ...result,
-          status: "failed",
-          sha: undefined,
-          summary: outOfRangeFixShaSummary(result.sha, commitWindow.afterSha)
-        });
-        continue;
-      }
-
-      validated.push({
-        ...result,
-        sha: verifiedSha
-      });
-    } catch (error) {
-      validated.push({
-        ...result,
-        status: "failed",
-        sha: undefined,
-        summary: invalidFixShaSummary(errorToMessage(error))
-      });
-    }
-  }
-
-  return validated;
 }
 
 function fixerCrashedSummary(message: string): string {
   return `The fixer failed before returning structured results. ${message}`;
 }
 
-function fixedButUncommittedSummary(message: string): string {
-  return `The fixer reported a fix, but mendr could not capture a new commit SHA. ${message}`;
+function fixerMovedHeadSummary(expectedSha: string, actualSha: string): string {
+  return `The fixer moved HEAD from ${expectedSha} to ${actualSha} before returning. mendr reset the worktree so unrecorded fixer commits are not pushed.`;
 }
 
-function missingFixShaSummary(): string {
-  return "The fixer reported this issue as fixed without a commit SHA. Manual follow-up is required.";
+function noDiffSummary(): string {
+  return "The fixer reported this issue as fixed, but did not leave any file changes to commit. Manual follow-up is required to determine whether the issue still needs a code change.";
 }
 
-function invalidFixShaSummary(message: string): string {
-  return `The fixer reported a commit SHA that mendr could not verify. ${message}`;
-}
+function validateCommitMessage(message: string | undefined): CommitMessageValidation {
+  const normalized = message?.replace(/\r\n?/g, "\n").trim();
 
-function outOfRangeFixShaSummary(sha: string, afterSha: string): string {
-  return `The fixer reported commit ${sha}, but it was not created in this batch. The batch ended at ${afterSha}.`;
-}
-
-async function pushWithRetry(exec: ExecFn, repo: string, branch: string): Promise<void> {
-  try {
-    await pushBranch(exec, repo, branch);
-  } catch {
-    await pushBranch(exec, repo, branch);
+  if (!normalized) {
+    return {
+      valid: false,
+      reason: "the fixer did not provide a commit message"
+    };
   }
+
+  if (normalized.includes("\0")) {
+    return {
+      valid: false,
+      reason: "commit messages must not contain NUL bytes"
+    };
+  }
+
+  const forbiddenReason = forbiddenCommitMessageReason(normalized);
+
+  if (forbiddenReason) {
+    return {
+      valid: false,
+      reason: forbiddenReason
+    };
+  }
+
+  const lines = normalized.split("\n");
+
+  if (lines.length !== 4) {
+    return {
+      valid: false,
+      reason:
+        "commit messages must contain a subject, a blank line, and exactly two bullet lines"
+    };
+  }
+
+  if (lines[1] !== "") {
+    return {
+      valid: false,
+      reason: "commit messages must separate the subject from the body with a blank line"
+    };
+  }
+
+  const subject = parseCommitSubject(lines[0]);
+
+  if (!subject) {
+    return {
+      valid: false,
+      reason:
+        "commit message subjects must match <type>(<scope>): <short imperative summary>"
+    };
+  }
+
+  if (subject.summary.endsWith(".")) {
+    return {
+      valid: false,
+      reason: "commit message summaries must not end with a period"
+    };
+  }
+
+  if (looksNonImperative(subject.summary)) {
+    return {
+      valid: false,
+      reason: "commit message summaries must be imperative"
+    };
+  }
+
+  if (!lines[2].startsWith("- ") || lines[2].trim() === "-") {
+    return {
+      valid: false,
+      reason: "commit message bodies must use a non-empty first bullet"
+    };
+  }
+
+  if (!lines[3].startsWith("- ") || lines[3].trim() === "-") {
+    return {
+      valid: false,
+      reason: "commit message bodies must use a non-empty second bullet"
+    };
+  }
+
+  return {
+    valid: true,
+    message: normalized
+  };
+}
+
+function invalidCommitMessageSummary(reason: string): string {
+  return `The fixer reported this issue as fixed, but its commit message is invalid: ${reason}. Manual follow-up is required before Mendr can safely record and push the fix.`;
+}
+
+function forbiddenCommitMessageReason(message: string): string | undefined {
+  const lines = message.split("\n");
+
+  if (lines.some((line) => /^co-authored-by\s*:/i.test(line.trim()))) {
+    return "commit messages must not include co-author lines";
+  }
+
+  if (/\b(?:ai|a\.i\.|openai|chatgpt|claude|anthropic|codex|providers?)\b/i.test(message)) {
+    return "commit messages must not include AI or provider references";
+  }
+
+  return undefined;
+}
+
+function parseCommitSubject(
+  line: string
+): { type: string; scope: string; summary: string } | undefined {
+  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([a-z][^\n]*)$/.exec(line);
+
+  if (!match) {
+    return undefined;
+  }
+
+  const [, type, scope, summary] = match;
+
+  if (!summary.trim()) {
+    return undefined;
+  }
+
+  return {
+    type,
+    scope,
+    summary
+  };
+}
+
+function looksNonImperative(summary: string): boolean {
+  const firstWord = summary.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+
+  return [
+    "added",
+    "adding",
+    "adds",
+    "changed",
+    "changing",
+    "changes",
+    "created",
+    "creating",
+    "creates",
+    "fixed",
+    "fixing",
+    "fixes",
+    "handled",
+    "handling",
+    "handles",
+    "made",
+    "makes",
+    "prevented",
+    "preventing",
+    "prevents",
+    "recorded",
+    "recording",
+    "records",
+    "rejected",
+    "rejecting",
+    "rejects",
+    "updated",
+    "updating",
+    "updates",
+    "used",
+    "using",
+    "uses",
+    "validated",
+    "validating",
+    "validates"
+  ].includes(firstWord);
+}
+
+async function pushWithRetry(
+  exec: ExecFn,
+  repo: string,
+  remote: string,
+  branch: string
+): Promise<void> {
+  try {
+    await pushHeadToBranch(exec, repo, remote, branch);
+  } catch {
+    await pushHeadToBranch(exec, repo, remote, branch);
+  }
+}
+
+function normalizeBranchPushRemote(remote: string | undefined): string {
+  const normalized = remote?.trim();
+
+  return normalized && normalized.length > 0 ? normalized : "origin";
 }
 
 async function postReportWithRetry(
@@ -482,6 +676,26 @@ async function postReportWithRetry(
     } catch (error) {
       await fail(options, postingState, "Posting review failed", error);
     }
+  }
+}
+
+async function persistIssueRecords(
+  options: RunOrchestratorOptions,
+  round: number,
+  issues: Issue[]
+): Promise<void> {
+  for (const [index, issue] of issues.entries()) {
+    await appendIssueRecord(options.mendrHome, options.reviewId, {
+      sessionId: options.reviewId,
+      round,
+      issueIndex: index + 1,
+      fingerprint: issueFingerprint(issue),
+      title: issue.title,
+      file: issue.file,
+      line: issue.line,
+      severity: issue.severity,
+      description: issue.description
+    });
   }
 }
 

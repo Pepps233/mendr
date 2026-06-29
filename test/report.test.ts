@@ -23,7 +23,7 @@ const baseEntry = {
 };
 
 describe("report markdown helpers", () => {
-  it("starts with exactly one Summary header while appending multiple issues", () => {
+  it("starts with exactly one Mendr summary header while appending multiple issues", () => {
     const first = appendResolvedIssue("", baseEntry);
     const second = appendResolvedIssue(first, {
       ...baseEntry,
@@ -46,22 +46,24 @@ describe("report markdown helpers", () => {
       sha: "fedcba9"
     });
 
-    expect(third.trimStart().startsWith("## Summary\n")).toBe(true);
-    expect(third.match(/^## Summary$/gm)).toHaveLength(1);
-    expect(third).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(third).toContain("- Issue: Handle empty PR comments");
-    expect(third).toContain("- Issue: Keep report context between rounds");
+    expect(third.trimStart().startsWith("## Summary by Mendr\n")).toBe(true);
+    expect(third.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
+    expect(third.match(/^### Resolved Issues$/gm)).toHaveLength(1);
+    expect(third).toContain("#### Prevent off-by-one diff ranges");
+    expect(third).toContain("#### Handle empty PR comments");
+    expect(third).toContain("#### Keep report context between rounds");
   });
 
-  it("renders each entry as Issue, Resolved by, then the two-sentence body", () => {
+  it("renders each entry as a subsection with commit and two-sentence body", () => {
     const report = appendResolvedIssue("", baseEntry);
     const meaningfulLines = report.split("\n").filter((line: string) => line.length > 0);
 
     expect(meaningfulLines).toEqual([
-      "## Summary",
-      "- Issue: Prevent off-by-one diff ranges",
-      "- Resolved by: abc1234",
-      "- Added an inclusive upper-bound check for changed ranges. Covered the boundary case with a regression test."
+      "## Summary by Mendr",
+      "### Resolved Issues",
+      "#### Prevent off-by-one diff ranges",
+      "**Commit:** `abc1234`",
+      "Added an inclusive upper-bound check for changed ranges. Covered the boundary case with a regression test."
     ]);
   });
 
@@ -72,6 +74,26 @@ describe("report markdown helpers", () => {
     expect(twice).toBe(once);
     expect(twice.match(/Prevent off-by-one diff ranges/g)).toHaveLength(1);
     expect(twice.match(/abc1234/g)).toHaveLength(1);
+  });
+
+  it("upgrades legacy Summary reports before appending new issue sections", () => {
+    const report = appendResolvedIssue(
+      [
+        "## Summary",
+        "- Issue: Already fixed",
+        "- Resolved by: old1111",
+        "- Preserved the existing legacy entry. Kept historical report context.",
+        ""
+      ].join("\n"),
+      baseEntry
+    );
+
+    expect(report.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
+    expect(report).not.toContain("## Summary\n");
+    expect(report).toContain("- Issue: Already fixed");
+    expect(report).toContain("### Resolved Issues");
+    expect(report).toContain("#### Prevent off-by-one diff ranges");
+    expect(report).toContain("**Commit:** `abc1234`");
   });
 
   it("renders open issues when the round cap is reached", () => {
@@ -89,10 +111,11 @@ describe("report markdown helpers", () => {
       ]
     });
 
-    expect(report.match(/^## Summary$/gm)).toHaveLength(1);
-    expect(report).toContain("- Round cap reached after 1 round with 2 open issues.");
-    expect(report).toContain("- Open issue: Prevent off-by-one diff ranges");
-    expect(report).toContain("- Open issue: Retry rejected pushes");
+    expect(report.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
+    expect(report).toContain("### Round Cap");
+    expect(report).toContain("Reached after 1 round with 2 open issues:");
+    expect(report).toContain("- Prevent off-by-one diff ranges");
+    expect(report).toContain("- Retry rejected pushes");
   });
 
   it("appends no-issue and failure notes only once", () => {
@@ -103,7 +126,7 @@ describe("report markdown helpers", () => {
 
     expect(duplicateNoIssues).toBe(noIssues);
     expect(noIssues.match(/No changed-scope issues found/g)).toHaveLength(1);
-    expect(failure).toMatch(/^## Summary\nExisting report body\n\n- Failure: push failed\n$/);
+    expect(failure).toMatch(/^## Summary by Mendr\nExisting report body\n\n- Failure: push failed\n$/);
     expect(duplicateFailure).toBe(failure);
   });
 
@@ -117,7 +140,7 @@ describe("report markdown helpers", () => {
       openIssues: [baseIssue]
     });
 
-    expect(once).toContain("- Round cap reached after 2 rounds with 1 open issue.");
+    expect(once).toContain("Reached after 2 rounds with 1 open issue:");
     expect(twice).toBe(once);
   });
 });

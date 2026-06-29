@@ -18,34 +18,75 @@ export async function getHeadCommitSha(exec: ExecFn, repo: string): Promise<stri
   return result.stdout.trim();
 }
 
-export async function listCommitShasInRange(
+export async function fetchPullRequestHeadRef(
   exec: ExecFn,
   repo: string,
-  beforeSha: string,
-  afterSha: string
-): Promise<string[]> {
-  const result = await execOk(exec, "git", ["rev-list", `${beforeSha}..${afterSha}`], {
+  pr: string,
+  ref: string
+): Promise<void> {
+  await execOk(exec, "git", ["fetch", "origin", `+refs/pull/${pr}/head:${ref}`], {
     cwd: repo
   });
-
-  return result.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
-export async function verifyCommitSha(
+export async function createDetachedWorktree(
   exec: ExecFn,
   repo: string,
-  sha: string
-): Promise<string> {
-  const result = await execOk(exec, "git", ["rev-parse", "--verify", `${sha}^{commit}`], {
+  worktreePath: string,
+  ref: string
+): Promise<void> {
+  await execOk(exec, "git", ["worktree", "add", "--detach", worktreePath, ref], {
     cwd: repo
   });
+}
+
+export async function removeWorktree(
+  exec: ExecFn,
+  repo: string,
+  worktreePath: string
+): Promise<void> {
+  await execOk(exec, "git", ["worktree", "remove", "--force", worktreePath], {
+    cwd: repo
+  });
+}
+
+export async function getPorcelainStatus(exec: ExecFn, repo: string): Promise<string> {
+  const result = await execOk(exec, "git", ["status", "--porcelain"], { cwd: repo });
 
   return result.stdout.trim();
 }
 
-export async function pushBranch(exec: ExecFn, repo: string, branch: string): Promise<void> {
-  await execOk(exec, "git", ["push", "origin", branch], { cwd: repo });
+export async function stageAll(exec: ExecFn, repo: string): Promise<void> {
+  await execOk(exec, "git", ["add", "-A"], { cwd: repo });
+}
+
+export async function commitStaged(
+  exec: ExecFn,
+  repo: string,
+  message: string
+): Promise<string> {
+  await execOk(exec, "git", ["commit", "-F", "-"], {
+    cwd: repo,
+    input: `${message.trim()}\n`
+  });
+
+  return getHeadCommitSha(exec, repo);
+}
+
+export async function resetWorktreeToCommit(
+  exec: ExecFn,
+  repo: string,
+  sha: string
+): Promise<void> {
+  await execOk(exec, "git", ["reset", "--hard", sha], { cwd: repo });
+  await execOk(exec, "git", ["clean", "-fdx"], { cwd: repo });
+}
+
+export async function pushHeadToBranch(
+  exec: ExecFn,
+  repo: string,
+  remote: string,
+  branch: string
+): Promise<void> {
+  await execOk(exec, "git", ["push", remote, `HEAD:${branch}`], { cwd: repo });
 }

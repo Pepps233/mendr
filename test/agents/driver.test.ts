@@ -94,7 +94,7 @@ describe("agent driver IO logging", () => {
         effort: "high",
         diff: "diff",
         reviewMarkdown: "# PR",
-        reportMarkdown: "## Summary"
+        reportMarkdown: "## Summary by Mendr"
       })
     ).resolves.toEqual([issue]);
 
@@ -132,7 +132,7 @@ describe("agent driver IO logging", () => {
         effort: "xhigh",
         diff: "diff",
         reviewMarkdown: "# PR",
-        reportMarkdown: "## Summary"
+        reportMarkdown: "## Summary by Mendr"
       })
     ).resolves.toEqual([issue]);
 
@@ -182,7 +182,7 @@ describe("agent driver IO logging", () => {
           effort: "high",
           diff: "diff",
           reviewMarkdown: "# PR",
-          reportMarkdown: "## Summary"
+          reportMarkdown: "## Summary by Mendr"
         })
       ).rejects.toThrow(/timed out/i);
 

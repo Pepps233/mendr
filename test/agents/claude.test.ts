@@ -30,6 +30,12 @@ const fixResult = {
     "validate pr urls|src/cli.ts|44|the parser accepts malformed pull request urls.",
   status: "fixed",
   sha: "abc1234",
+  commitMessage: [
+    "fix(cli): validate pull request urls",
+    "",
+    "- Rejects malformed pull request URLs before review setup",
+    "- Covers parser behavior for invalid GitHub PR inputs"
+  ].join("\n"),
   summary:
     "Tightened pull request URL parsing. Added coverage for malformed GitHub pull request URLs."
 };
@@ -41,7 +47,7 @@ const reviewContext = {
   effort: "high" as const,
   diff: "diff --git a/src/cli.ts b/src/cli.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
-  reportMarkdown: "## Summary\n- Issue: Already fixed\n- Resolved by: abc1234"
+  reportMarkdown: "## Summary by Mendr\n\n### Resolved Issues\n\n#### Already fixed\n**Commit:** `abc1234`"
 };
 
 describe("Claude agent driver", () => {
@@ -142,6 +148,8 @@ describe("Claude agent driver", () => {
     expect(prompt).toBe(buildReviewPrompt(reviewContext));
     expect(prompt).toContain("security issues");
     expect(prompt).not.toContain("changed-scope bugs");
+    expect(prompt).toContain("specific enough to stand alone in the final summary");
+    expect(prompt).toContain("exactly two concise sentences for each issue description");
     expect(prompt).toContain(reviewContext.diff);
     expect(prompt).toContain(reviewContext.reportMarkdown);
   });
@@ -174,6 +182,9 @@ describe("Claude agent driver", () => {
     );
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
-    expect(prompt).toContain("Do not include co-author lines");
+    expect(prompt).toContain("Do not create commits");
+    expect(prompt).toContain("\"commitMessage\"");
+    expect(prompt).toContain("mendr will stage, commit with your commitMessage");
+    expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });

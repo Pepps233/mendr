@@ -24,6 +24,9 @@ type ReviewContext = {
 type FixResult = {
   status?: "fixed" | "failed";
   sha?: string;
+  commitMessage?: string;
+  omitCommitMessage?: boolean;
+  createUnrecordedCommit?: boolean;
   summary: string;
 };
 
@@ -128,6 +131,28 @@ function findCall(calls: ExecCall[], command: string, args: string[]) {
   return findCalls(calls, command, args)[0];
 }
 
+function callInput(call: ExecCall): string | undefined {
+  return (call.options as { input?: string } | undefined)?.input;
+}
+
+function defaultCommitMessageForIssue(issue: Issue): string {
+  if (issue.file.includes("state")) {
+    return [
+      "fix(state): refresh status reads",
+      "",
+      "- Keeps rendered state aligned with the latest persisted write",
+      "- Covers stale reads through the parent-created commit"
+    ].join("\n");
+  }
+
+  return [
+    "fix(range): include changed range end",
+    "",
+    "- Keeps the final modified line inside the reviewed diff range",
+    "- Covers boundary handling through the parent-created commit"
+  ].join("\n");
+}
+
 class AgentParseFailure extends Error {
   constructor(message = "Malformed agent JSON") {
     super(message);
@@ -138,7 +163,13 @@ class AgentParseFailure extends Error {
 class ScriptedExec {
   readonly calls: ExecCall[] = [];
 
-  private shaIndex = 0;
+  private readonly commitShas: string[];
+
+  private currentHead: string;
+
+  private statusIndex = 0;
+
+  private commitIndex = 0;
 
   private pushAttempts = 0;
 
@@ -150,12 +181,21 @@ class ScriptedExec {
       diff?: string;
       shas?: Array<string | Error | null>;
       headReads?: Array<string | Error | null>;
+      statusOutputs?: string[];
+      commitFailures?: number;
       emptyRevList?: boolean;
       invalidVerifyShas?: string[];
       pushFailures?: number;
       commentFailures?: number;
     } = {}
-  ) {}
+  ) {
+    const shas = options.shas?.filter((sha): sha is string => typeof sha === "string") ?? [
+      "abc1234"
+    ];
+
+    this.currentHead = shas.length > 1 ? shas[0] : "base0000";
+    this.commitShas = shas.length > 1 ? shas.slice(1) : shas;
+  }
 
   run = async (
     command: string,
@@ -211,25 +251,29 @@ class ScriptedExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-parse" && args[1] === "--verify") {
-      const sha = args[2]?.replace(/\^\{commit\}$/, "") ?? "";
-
-      if (this.options.invalidVerifyShas?.includes(sha)) {
-        return { stdout: "", stderr: "unknown revision", exitCode: 1 };
-      }
-
-      return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
+    if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
+      return { stdout: this.currentHead, stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
-      const value = this.readHeadValue();
-      this.shaIndex += 1;
+    if (command === "git" && args[0] === "status" && args[1] === "--porcelain") {
+      const status =
+        this.options.statusOutputs?.[
+          Math.min(this.statusIndex, this.options.statusOutputs.length - 1)
+        ] ?? " M src/range.ts";
 
-      if (value instanceof Error) {
-        throw value;
-      }
+      this.statusIndex += 1;
 
-      if (value === null) {
+      return { stdout: status, stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "add" && args[1] === "-A") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "commit") {
+      this.commitIndex += 1;
+
+      if (this.commitIndex <= (this.options.commitFailures ?? 0)) {
         return {
           stdout: "",
           stderr: "nothing to commit",
@@ -237,15 +281,20 @@ class ScriptedExec {
         };
       }
 
-      return { stdout: value, stderr: "", exitCode: 0 };
+      this.currentHead =
+        this.commitShas[Math.min(this.commitIndex - 1, this.commitShas.length - 1)] ?? "abc1234";
+
+      return { stdout: `[detached HEAD ${this.currentHead}] fix`, stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-list") {
-      if (this.options.emptyRevList) {
-        return { stdout: "", stderr: "", exitCode: 0 };
-      }
+    if (command === "git" && args[0] === "reset" && args[1] === "--hard") {
+      this.currentHead = args[2] ?? this.currentHead;
 
-      return { stdout: this.readCommitRange(args[1] ?? ""), stderr: "", exitCode: 0 };
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "clean" && args[1] === "-fdx") {
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "git" && args[0] === "push") {
@@ -264,42 +313,6 @@ class ScriptedExec {
 
     throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
   };
-
-  private readHeadValue(): string | Error | null {
-    const headReads = this.options.headReads ?? this.options.shas;
-
-    if (headReads) {
-      const scripted = headReads[Math.min(this.shaIndex, headReads.length - 1)];
-
-      return scripted === undefined ? "abc1234" : scripted;
-    }
-
-    const fixIndex = Math.floor(this.shaIndex / 2);
-    const isAfterFix = this.shaIndex % 2 === 1;
-
-    if (!isAfterFix) {
-      return fixIndex === 0 ? "base0000" : "abc1234";
-    }
-
-    return "abc1234";
-  }
-
-  private readCommitRange(range: string): string {
-    const [beforeSha, afterSha] = range.split("..");
-    const shas = this.options.shas?.filter((sha): sha is string => typeof sha === "string") ?? [
-      "abc1234"
-    ];
-    const afterIndex = shas.indexOf(afterSha);
-
-    if (afterIndex === -1) {
-      return afterSha;
-    }
-
-    const beforeIndex = shas.indexOf(beforeSha);
-    const startIndex = beforeIndex === -1 ? 0 : beforeIndex + 1;
-
-    return shas.slice(startIndex, afterIndex + 1).reverse().join("\n");
-  }
 }
 
 class ScriptedAgentDriver {
@@ -313,7 +326,8 @@ class ScriptedAgentDriver {
 
   constructor(
     private readonly reviews: Array<Issue[] | Error>,
-    private readonly fixes: Array<FixResult | FixResult[] | Error> = []
+    private readonly fixes: Array<FixResult | FixResult[] | Error> = [],
+    private readonly exec?: ScriptedExec
   ) {}
 
   async review(ctx: ReviewContext): Promise<Issue[]> {
@@ -344,7 +358,13 @@ class ScriptedAgentDriver {
       return [];
     }
 
-    return issues.map((issue, index) => {
+    const mappedResults: Array<FixResult & {
+      title: string;
+      fingerprint: string;
+      status: "fixed" | "failed";
+    }> = [];
+
+    for (const [index, issue] of issues.entries()) {
       const defaultResult = {
         summary:
           "Fixed the changed range calculation. Added coverage for the boundary case."
@@ -353,15 +373,25 @@ class ScriptedAgentDriver {
         ? result[index] ?? defaultResult
         : result ?? defaultResult;
       const hasExplicitSha = Object.prototype.hasOwnProperty.call(scripted, "sha");
+      const commitMessage = scripted.omitCommitMessage
+        ? undefined
+        : scripted.commitMessage ?? defaultCommitMessageForIssue(issue);
 
-      return {
+      if (scripted.createUnrecordedCommit && scripted.status !== "failed") {
+        await this.exec?.run("git", ["commit", "-m", "fixer-owned"], { cwd: ctx.repo });
+      }
+
+      mappedResults.push({
         title: issue.title,
         fingerprint: issueFingerprint(issue),
         status: scripted.status ?? "fixed",
         sha: scripted.status === "failed" ? undefined : hasExplicitSha ? scripted.sha : "abc1234",
+        commitMessage: scripted.status === "failed" ? undefined : commitMessage,
         summary: scripted.summary
-      };
-    });
+      });
+    }
+
+    return mappedResults;
   }
 }
 
@@ -428,6 +458,55 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
 
+  it("uses a valid persisted effort override in review contexts", async () => {
+    const home = await makeHome();
+    const id = "valid-effort-codex-0db4";
+    await seedReview(home, id, {
+      agent: "codex",
+      effort: "high"
+    });
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    expect(driver.reviewContexts).toHaveLength(1);
+    expect(driver.reviewContexts[0].effort).toBe("high");
+  });
+
+  it("records unexpected report read failures as orchestrator failures", async () => {
+    const home = await makeHome();
+    const id = "report-read-fails-d240";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await mkdir(join(reviewDir, "report.md"));
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/directory|EISDIR|illegal operation/i);
+
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(state.currentStatus).toBe("Orchestrator failed");
+    expect(state.error).toMatch(/directory|EISDIR|illegal operation/i);
+    expect(driver.reviewContexts).toHaveLength(0);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+  });
+
   it("handles an empty PR diff by posting a valid no-issues report", async () => {
     const home = await makeHome();
     const id = "empty-diff-6a23";
@@ -448,7 +527,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(driver.reviewContexts).toHaveLength(1);
     expect(driver.reviewContexts[0].diff).toBe("");
     expect(driver.fixContexts).toHaveLength(0);
-    expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
+    expect(reportMarkdown.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
     expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
     expect(events.map((event) => event.status)).toEqual([
@@ -516,14 +595,14 @@ describe("orchestrator edge and failure handling", () => {
       join(reviewDir, "state.json")
     );
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: fixed111");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `fixed111`");
     expect(state.currentStatus).toMatch(/review failed/i);
     expect(state.error).toContain("Second review emitted malformed JSON");
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
   });
 
-  it("records mixed per-issue results from one fixer batch", async () => {
+  it("records mixed per-issue results from separate fixer invocations", async () => {
     const home = await makeHome();
     const id = "partial-fix-fail-1b76";
     const reviewDir = await seedReview(home, id);
@@ -531,18 +610,15 @@ describe("orchestrator edge and failure handling", () => {
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, staleStateIssue], []],
       [
-        [
-          {
-            status: "failed",
-            summary:
-              "The fixer reported that this issue failed with exit code one. Manual follow-up is required."
-          },
-          {
-            sha: "ok2222",
-            summary:
-              "Fixed stale state rendering. Added coverage for file-backed status reads."
-          }
-        ]
+        {
+          status: "failed",
+          summary:
+            "The fixer reported that this issue failed with exit code one. Manual follow-up is required."
+        },
+        {
+          summary:
+            "Fixed stale state rendering. Added coverage for file-backed status reads."
+        }
       ]
     );
 
@@ -559,45 +635,42 @@ describe("orchestrator edge and failure handling", () => {
     );
     const events = await readEvents(reviewDir);
 
-    expect(driver.fixContexts).toHaveLength(1);
+    expect(driver.fixContexts).toHaveLength(2);
     expect(driver.fixContexts[0].issues.map((issue) => issue.title)).toEqual([
-      "Prevent off-by-one diff ranges",
+      "Prevent off-by-one diff ranges"
+    ]);
+    expect(driver.fixContexts[1].issues.map((issue) => issue.title)).toEqual([
       "Refresh stale state reads"
     ]);
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
     expect(reportMarkdown).toContain("exit code one");
-    expect(reportMarkdown).toContain("- Issue: Refresh stale state reads");
-    expect(reportMarkdown).toContain("- Resolved by: ok2222");
+    expect(reportMarkdown).toContain("#### Refresh stale state reads");
+    expect(reportMarkdown).toContain("**Commit:** `ok2222`");
     expect(state).toMatchObject({ issuesFound: 2, issuesFixed: 1 });
     expect(events.map((event) => event.status)).toEqual(
       expect.arrayContaining(["Fix failed", "Complete"])
     );
   });
 
-  it("keeps distinct per-issue SHAs from multiple commits in one fixer batch", async () => {
+  it("keeps distinct parent-created SHAs from multiple issue fixes", async () => {
     const home = await makeHome();
     const id = "multi-commit-batch-51dc";
     const reviewDir = await seedReview(home, id);
     const exec = new ScriptedExec({
-      shas: ["base0000", "range111", "state222"],
-      headReads: ["base0000", "state222"]
+      shas: ["base0000", "range111", "state222"]
     });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, staleStateIssue], []],
       [
-        [
-          {
-            sha: "range111",
-            summary:
-              "Fixed the changed range calculation. Added coverage for the final modified line."
-          },
-          {
-            sha: "state222",
-            summary:
-              "Fixed stale state rendering. Added coverage for file-backed status reads."
-          }
-        ]
+        {
+          summary:
+            "Fixed the changed range calculation. Added coverage for the final modified line."
+        },
+        {
+          summary:
+            "Fixed stale state rendering. Added coverage for file-backed status reads."
+        }
       ]
     );
 
@@ -609,23 +682,89 @@ describe("orchestrator edge and failure handling", () => {
     });
 
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const fixRecords = (await readFile(join(reviewDir, "fixes.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { issueIndex: number; commitSha?: string });
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: range111");
-    expect(reportMarkdown).toContain("- Issue: Refresh stale state reads");
-    expect(reportMarkdown).toContain("- Resolved by: state222");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `range111`");
+    expect(reportMarkdown).toContain("#### Refresh stale state reads");
+    expect(reportMarkdown).toContain("**Commit:** `state222`");
+    expect(fixRecords).toEqual([
+      expect.objectContaining({ issueIndex: 1, commitSha: "range111" }),
+      expect.objectContaining({ issueIndex: 2, commitSha: "state222" })
+    ]);
     expect(state.issuesFixed).toBe(2);
-    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "origin",
+      "HEAD:feature/range-fix"
+    ]);
   });
 
-  it("marks reported fix SHAs outside the fixer commit range unresolved", async () => {
+  it("keeps issue 1 committed when issue 2 fails and resets to the last successful commit", async () => {
+    const home = await makeHome();
+    const id = "second-issue-fails-2ab9";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "first111"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue, staleStateIssue], []],
+      [
+        {
+          summary:
+            "Fixed the first issue. Added coverage for the changed range calculation."
+        },
+        {
+          status: "failed",
+          summary:
+            "Could not safely fix the stale state issue. Manual follow-up is required."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const fixRecords = (await readFile(join(reviewDir, "fixes.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { issueIndex: number; status: string; commitSha?: string });
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+    const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
+    const cleanCall = findCall(exec.calls, "git", ["clean"]);
+
+    expect(reportMarkdown).toContain("**Commit:** `first111`");
+    expect(reportMarkdown).toContain("Could not safely fix the stale state issue");
+    expect(fixRecords[0]).toEqual(
+      expect.objectContaining({ issueIndex: 1, status: "fixed", commitSha: "first111" })
+    );
+    expect(fixRecords[1]).toEqual(
+      expect.objectContaining({ issueIndex: 2, status: "failed" })
+    );
+    expect(fixRecords[1]).not.toHaveProperty("commitSha");
+    expect(resetCall?.args).toEqual(["reset", "--hard", "first111"]);
+    expect(cleanCall?.args).toEqual(["clean", "-fdx"]);
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "origin",
+      "HEAD:feature/range-fix"
+    ]);
+  });
+
+  it("ignores reported fix SHAs outside the fixer session and records the parent commit", async () => {
     const home = await makeHome();
     const id = "out-of-range-sha-30af";
     const reviewDir = await seedReview(home, id);
     const exec = new ScriptedExec({
-      shas: ["base0000", "valid111"],
-      headReads: ["base0000", "valid111"]
+      shas: ["base0000", "valid111"]
     });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
@@ -648,21 +787,23 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/not created in this batch|valid111/i);
-    expect(state.issuesFixed).toBe(0);
-    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `valid111`");
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
+      "push",
+      "origin",
+      "HEAD:feature/range-fix"
+    ]);
   });
 
-  it("marks reported fix SHAs unresolved when git cannot verify them", async () => {
+  it("does not verify agent-reported SHAs because mendr owns the final commit", async () => {
     const home = await makeHome();
     const id = "invalid-fix-sha-7a90";
     const reviewDir = await seedReview(home, id);
     const exec = new ScriptedExec({
       invalidVerifyShas: ["bad9999"],
-      shas: ["base0000", "valid111"],
-      headReads: ["base0000", "valid111"]
+      shas: ["base0000", "valid111"]
     });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
@@ -685,11 +826,10 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/could not verify|unknown revision/i);
-    expect(state.issuesFixed).toBe(0);
-    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `valid111`");
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
 
   it("records failed fixer results and skips push", async () => {
@@ -718,8 +858,8 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const events = await readEvents(reviewDir);
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
     expect(reportMarkdown).toMatch(/nothing to commit/i);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
     expect(events.map((event) => event.status)).toEqual(
@@ -750,8 +890,8 @@ describe("orchestrator edge and failure handling", () => {
     );
     const events = await readEvents(reviewDir);
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
     expect(reportMarkdown).toContain("fix agent exited with code 1");
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
@@ -762,17 +902,17 @@ describe("orchestrator edge and failure handling", () => {
     );
   });
 
-  it("marks reported fixes unresolved when the fixer does not create a new commit", async () => {
+  it("marks reported fixes unresolved when the fixer leaves no diff", async () => {
     const home = await makeHome();
     const id = "unchanged-head-4e29";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ shas: ["base0000", "base0000"] });
+    const exec = new ScriptedExec({ statusOutputs: [""] });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
       [
         {
           summary:
-            "Reported the range fix as complete. Expected mendr to verify that a new commit exists."
+            "Reported the range fix as complete. Expected mendr to verify that a file diff exists."
         }
       ]
     );
@@ -787,11 +927,79 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/HEAD did not change|new commit SHA/i);
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toMatch(/file changes to commit/i);
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("marks fixed results without commit messages unresolved", async () => {
+    const home = await makeHome();
+    const id = "missing-commit-message-14ea";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "missingmsg"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          omitCommitMessage: true,
+          summary:
+            "Reported the range fix as complete. Expected mendr to require a commit message."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toMatch(/did not provide a commit message/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("stops with an infrastructure error when the parent commit fails", async () => {
+    const home = await makeHome();
+    const id = "parent-commit-fails-95fd";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ commitFailures: 1 });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added a regression test for the final line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/commit|nothing to commit/i);
+
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(state.currentStatus).toBe("Commit failed");
+    expect(state.error).toMatch(/nothing to commit|git commit/i);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
   });
 
   it("marks fixes unresolved when the fixer omits a result for an issue", async () => {
@@ -811,14 +1019,14 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
     expect(reportMarkdown).toContain("did not return a result");
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
-  it("marks fixes unresolved when the fixer reports fixed without a SHA", async () => {
+  it("records a parent commit when the fixer reports fixed without a SHA", async () => {
     const home = await makeHome();
     const id = "missing-fix-sha-9df2";
     const reviewDir = await seedReview(home, id);
@@ -846,14 +1054,13 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/without a commit SHA/i);
-    expect(state.issuesFixed).toBe(0);
-    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `missing555`");
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
 
-  it("marks fixes unresolved when the commit range is empty", async () => {
+  it("does not depend on fixer commit ranges when recording a parent commit", async () => {
     const home = await makeHome();
     const id = "empty-commit-range-40cf";
     const reviewDir = await seedReview(home, id);
@@ -867,7 +1074,7 @@ describe("orchestrator edge and failure handling", () => {
         {
           sha: "empty666",
           summary:
-            "Reported a fixed range commit. Expected mendr to reject an empty commit range."
+            "Reported a fixed range commit. Expected mendr to use its own parent commit."
         }
       ]
     );
@@ -882,10 +1089,260 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/rev-list did not return/i);
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `empty666`");
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
+  });
+
+  it("uses the fixer-provided commit message for the parent commit", async () => {
+    const home = await makeHome();
+    const id = "fixer-commit-message-45ac";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "msg777"] });
+    const commitMessage = [
+      "fix(range): include final changed line",
+      "",
+      "- Updates range parsing to keep the upper bound in scope",
+      "- Makes the parent-created commit describe the actual code change"
+    ].join("\n");
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          commitMessage,
+          summary:
+            "Updated the parser boundary handling so changed ranges include the final modified line and remain stable across retries."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const commitCall = findCall(exec.calls, "git", ["commit"]);
+
+    expect(commitCall?.args).toEqual(["commit", "-F", "-"]);
+    expect(callInput(commitCall!)).toBe(`${commitMessage}\n`);
+    expect(callInput(commitCall!)).not.toContain(issueFingerprint(rangeIssue));
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("Updated the parser boundary handling");
+  });
+
+  it("marks fixed results with unsafe commit messages unresolved", async () => {
+    const home = await makeHome();
+    const id = "unsafe-commit-message-6c21";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "unsafe888"] });
+    const commitMessage = [
+      "fix(range): include final changed line",
+      "",
+      "- Updates range parsing to keep the upper bound in scope",
+      "- Makes the parent-created commit describe the actual code change",
+      "Co-authored-by: Claude <claude@example.com>"
+    ].join("\n");
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          commitMessage,
+          summary:
+            "Updated the parser boundary handling so changed ranges include the final modified line and remain stable across retries."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toMatch(/commit message/i);
     expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+  });
+
+  it("rejects malformed fixer commit messages before committing", async () => {
+    const invalidCommitMessageCases = [
+      {
+        id: "nul",
+        message: [
+          "fix(range): include\0 final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers the final changed line through validation"
+        ].join("\n"),
+        reason: /NUL bytes/i
+      },
+      {
+        id: "provider",
+        message: [
+          "fix(range): include final changed line",
+          "",
+          "- Keeps OpenAI output from leaking into commit metadata",
+          "- Covers provider reference rejection before commit"
+        ].join("\n"),
+        reason: /provider references/i
+      },
+      {
+        id: "short",
+        message: [
+          "fix(range): include final changed line",
+          "- Keeps the upper bound inside the reviewed range"
+        ].join("\n"),
+        reason: /exactly two bullet lines/i
+      },
+      {
+        id: "blank",
+        message: [
+          "fix(range): include final changed line",
+          "not blank",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers blank separator enforcement"
+        ].join("\n"),
+        reason: /blank line/i
+      },
+      {
+        id: "subject",
+        message: [
+          "fix range include final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers subject format enforcement"
+        ].join("\n"),
+        reason: /subjects must match/i
+      },
+      {
+        id: "period",
+        message: [
+          "fix(range): include final changed line.",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers period-ended subject rejection"
+        ].join("\n"),
+        reason: /must not end with a period/i
+      },
+      {
+        id: "imperative",
+        message: [
+          "fix(range): fixed final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers non-imperative summary rejection"
+        ].join("\n"),
+        reason: /must be imperative/i
+      },
+      {
+        id: "first-bullet",
+        message: [
+          "fix(range): include final changed line",
+          "",
+          "- ",
+          "- Covers first bullet validation"
+        ].join("\n"),
+        reason: /non-empty first bullet/i
+      },
+      {
+        id: "second-bullet",
+        message: [
+          "fix(range): include final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "-"
+        ].join("\n"),
+        reason: /non-empty second bullet/i
+      }
+    ];
+
+    for (const testCase of invalidCommitMessageCases) {
+      const home = await makeHome();
+      const id = `invalid-commit-message-${testCase.id}`;
+      const reviewDir = await seedReview(home, id);
+      const exec = new ScriptedExec({ shas: ["base0000", `bad${testCase.id}`] });
+      const driver = new ScriptedAgentDriver(
+        [[rangeIssue], []],
+        [
+          {
+            commitMessage: testCase.message,
+            summary:
+              "Updated the parser boundary handling. Added validation coverage for unsafe commit messages."
+          }
+        ]
+      );
+
+      await runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      });
+
+      const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+      const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+      expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+      expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+      expect(reportMarkdown).toMatch(testCase.reason);
+      expect(state.issuesFixed).toBe(0);
+      expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
+      expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    }
+  });
+
+  it("resets and fails a fix when the fixer creates an unrecorded commit", async () => {
+    const home = await makeHome();
+    const id = "fixer-created-commit-94c1";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "fixer111", "parent222"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          createUnrecordedCommit: true,
+          summary:
+            "Fixed the range calculation after creating a local commit. Left an extra file edit for mendr to commit."
+        }
+      ],
+      exec
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const fixRecords = (await readFile(join(reviewDir, "fixes.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { status: string; commitSha?: string });
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+    const parentCommitCall = findCall(exec.calls, "git", ["commit", "-F", "-"]);
+    const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
+
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toMatch(/moved HEAD from base0000 to fixer111/i);
+    expect(fixRecords[0]).toEqual(expect.objectContaining({ status: "failed" }));
+    expect(fixRecords[0]).not.toHaveProperty("commitSha");
+    expect(state.issuesFixed).toBe(0);
+    expect(parentCommitCall).toBeUndefined();
+    expect(resetCall?.args).toEqual(["reset", "--hard", "base0000"]);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
@@ -916,7 +1373,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ done: boolean; error?: string }>(join(reviewDir, "state.json"));
 
     expect(findCalls(exec.calls, "git", ["push"])).toHaveLength(2);
-    expect(reportMarkdown).toContain("- Resolved by: retry777");
+    expect(reportMarkdown).toContain("**Commit:** `retry777`");
     expect(reportMarkdown).not.toMatch(/push failed/i);
     expect(state).toMatchObject({ done: true });
     expect(state.error).toBeUndefined();
@@ -953,8 +1410,8 @@ describe("orchestrator edge and failure handling", () => {
     );
 
     expect(findCalls(exec.calls, "git", ["push"])).toHaveLength(2);
-    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("- Resolved by: push3333");
+    expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("**Commit:** `push3333`");
     expect(reportMarkdown).toMatch(/push failed|non-fast-forward/i);
     expect(state.currentStatus).toMatch(/push failed/i);
     expect(state.error).toMatch(/non-fast-forward|push/i);
@@ -982,7 +1439,7 @@ describe("orchestrator edge and failure handling", () => {
     );
 
     expect(findCalls(exec.calls, "gh", ["pr", "comment", "42"])).toHaveLength(2);
-    expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
+    expect(reportMarkdown.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
     expect(state.currentStatus).toMatch(/posting review failed/i);
     expect(state.error).toMatch(/rate limit|comment/i);
   });
@@ -1063,8 +1520,8 @@ describe("orchestrator edge and failure handling", () => {
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
 
     expect(driver.fixContexts).toHaveLength(1);
-    expect(reportMarkdown.match(/- Issue: Prevent off-by-one diff ranges/g)).toHaveLength(1);
-    expect(reportMarkdown).toContain("- Resolved by: dedupe444");
+    expect(reportMarkdown.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(reportMarkdown).toContain("**Commit:** `dedupe444`");
   });
 
   it("records startup failures that happen before PR fetching begins", async () => {

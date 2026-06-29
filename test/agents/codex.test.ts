@@ -25,6 +25,12 @@ const fixResult = {
     "preserve report context|src/orchestrator.ts|88|the next review round must receive the updated report markdown.",
   status: "fixed",
   sha: "def5678",
+  commitMessage: [
+    "fix(orchestrator): pass report context",
+    "",
+    "- Threads report markdown into the next review context",
+    "- Covers multi-round context handoff"
+  ].join("\n"),
   summary:
     "Threaded report markdown into the next review context. Added coverage for multi-round context handoff."
 };
@@ -36,7 +42,7 @@ const reviewContext = {
   effort: "xhigh" as const,
   diff: "diff --git a/src/orchestrator.ts b/src/orchestrator.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
-  reportMarkdown: "## Summary\n- Issue: Already fixed\n- Resolved by: abc1234"
+  reportMarkdown: "## Summary by Mendr\n\n### Resolved Issues\n\n#### Already fixed\n**Commit:** `abc1234`"
 };
 
 describe("Codex agent driver", () => {
@@ -95,6 +101,8 @@ describe("Codex agent driver", () => {
     expect(prompt).toContain("review agent");
     expect(prompt).toContain("security issues");
     expect(prompt).not.toContain("changed-scope bugs");
+    expect(prompt).toContain("specific enough to stand alone in the final summary");
+    expect(prompt).toContain("exactly two concise sentences for each issue description");
     expect(prompt).toContain("respond ONLY with JSON");
     expect(prompt).toContain(reviewContext.diff);
     expect(prompt).toContain(reviewContext.reportMarkdown);
@@ -126,6 +134,9 @@ describe("Codex agent driver", () => {
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
-    expect(prompt).toContain("Do not include co-author lines");
+    expect(prompt).toContain("Do not create commits");
+    expect(prompt).toContain("\"commitMessage\"");
+    expect(prompt).toContain("mendr will stage, commit with your commitMessage");
+    expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });

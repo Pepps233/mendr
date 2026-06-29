@@ -13,16 +13,28 @@ export type RoundCapNote = {
   openIssues: Issue[];
 };
 
-export function appendResolvedIssue(report: string, entry: ResolvedIssueEntry): string {
-  const normalized = ensureSummary(report);
-  const issueLine = `- Issue: ${entry.issue.title}`;
-  const shaLine = `- Resolved by: ${entry.sha}`;
+const REPORT_HEADING = "## Summary by Mendr";
+const LEGACY_REPORT_HEADING = "## Summary";
+const RESOLVED_ISSUES_HEADING = "### Resolved Issues";
+const ROUND_CAP_HEADING = "### Round Cap";
 
-  if (normalized.includes(`${issueLine}\n${shaLine}`)) {
+export function appendResolvedIssue(report: string, entry: ResolvedIssueEntry): string {
+  let normalized = ensureSummary(report);
+  const issueLine = `#### ${entry.issue.title}`;
+  const shaLine = `**Commit:** \`${entry.sha}\``;
+  const legacyIssueLine = `- Issue: ${entry.issue.title}`;
+  const legacyShaLine = `- Resolved by: ${entry.sha}`;
+
+  if (
+    normalized.includes(`${issueLine}\n${shaLine}`) ||
+    normalized.includes(`${legacyIssueLine}\n${legacyShaLine}`)
+  ) {
     return report;
   }
 
-  return appendLines(normalized, [issueLine, shaLine, `- ${entry.summary}`]);
+  normalized = ensureSection(normalized, RESOLVED_ISSUES_HEADING);
+
+  return appendBlock(normalized, [issueLine, shaLine, entry.summary]);
 }
 
 export function appendIssueResult(report: string, entry: IssueResultEntry): string {
@@ -37,7 +49,7 @@ export function appendNoIssuesFound(report: string): string {
     return report;
   }
 
-  return appendLines(normalized, [line]);
+  return appendBlock(normalized, [line]);
 }
 
 export function appendFailureNote(report: string, message: string): string {
@@ -48,40 +60,61 @@ export function appendFailureNote(report: string, message: string): string {
     return report;
   }
 
-  return appendLines(normalized, [line]);
+  return appendBlock(normalized, [line]);
 }
 
 export function appendRoundCapNote(report: string, note: RoundCapNote): string {
-  const normalized = ensureSummary(report);
+  let normalized = ensureSummary(report);
   const round = note.maxRounds === 1 ? "round" : "rounds";
   const issue = note.openIssues.length === 1 ? "issue" : "issues";
-  const capLine = `- Round cap reached after ${note.maxRounds} ${round} with ${note.openIssues.length} open ${issue}.`;
-  const openIssueLines = note.openIssues.map((openIssue) => `- Open issue: ${openIssue.title}`);
+  const capLine = `Reached after ${note.maxRounds} ${round} with ${note.openIssues.length} open ${issue}:`;
+  const legacyCapLine = `- Round cap reached after ${note.maxRounds} ${round} with ${note.openIssues.length} open ${issue}.`;
+  const openIssueLines = note.openIssues.map((openIssue) => `- ${openIssue.title}`);
 
-  if (normalized.includes(capLine)) {
+  if (normalized.includes(capLine) || normalized.includes(legacyCapLine)) {
     return report;
   }
 
-  return appendLines(normalized, [capLine, ...openIssueLines]);
+  normalized = ensureSection(normalized, ROUND_CAP_HEADING);
+
+  return appendBlock(normalized, [capLine, ...openIssueLines]);
 }
 
 function ensureSummary(report: string): string {
   const trimmed = report.trim();
 
   if (trimmed.length === 0) {
-    return "## Summary\n";
+    return `${REPORT_HEADING}\n`;
   }
 
-  if (/^## Summary$/m.test(trimmed)) {
+  if (hasLine(trimmed, REPORT_HEADING)) {
     return `${trimmed}\n`;
   }
 
-  return `## Summary\n${trimmed}\n`;
+  if (hasLine(trimmed, LEGACY_REPORT_HEADING)) {
+    return `${trimmed.replace(/^## Summary$/m, REPORT_HEADING)}\n`;
+  }
+
+  return `${REPORT_HEADING}\n${trimmed}\n`;
 }
 
-function appendLines(report: string, lines: string[]): string {
-  const base = report.endsWith("\n") ? report : `${report}\n`;
-  const separator = base.trimEnd() === "## Summary" ? "" : "\n";
+function ensureSection(report: string, sectionHeading: string): string {
+  if (hasLine(report, sectionHeading)) {
+    return report;
+  }
+
+  return appendBlock(report, [sectionHeading]);
+}
+
+function appendBlock(report: string, lines: string[]): string {
+  const base = report.trimEnd();
+  const separator = base.length === 0 ? "" : "\n\n";
 
   return `${base}${separator}${lines.join("\n")}\n`;
+}
+
+function hasLine(text: string, line: string): boolean {
+  const escaped = line.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  return new RegExp(`^${escaped}$`, "m").test(text);
 }
