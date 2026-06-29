@@ -416,6 +416,55 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
 
+  it("uses a valid persisted effort override in review contexts", async () => {
+    const home = await makeHome();
+    const id = "valid-effort-codex-0db4";
+    await seedReview(home, id, {
+      agent: "codex",
+      effort: "high"
+    });
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    expect(driver.reviewContexts).toHaveLength(1);
+    expect(driver.reviewContexts[0].effort).toBe("high");
+  });
+
+  it("records unexpected report read failures as orchestrator failures", async () => {
+    const home = await makeHome();
+    const id = "report-read-fails-d240";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await mkdir(join(reviewDir, "report.md"));
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/directory|EISDIR|illegal operation/i);
+
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(state.currentStatus).toBe("Orchestrator failed");
+    expect(state.error).toMatch(/directory|EISDIR|illegal operation/i);
+    expect(driver.reviewContexts).toHaveLength(0);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+  });
+
   it("handles an empty PR diff by posting a valid no-issues report", async () => {
     const home = await makeHome();
     const id = "empty-diff-6a23";
