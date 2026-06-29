@@ -12,7 +12,7 @@ import {
   type ReviewContext
 } from "./agents/types.js";
 import { defaultExec, type ExecFn } from "./exec.js";
-import { getHeadCommitSha, pushBranch, verifyCommitSha } from "./git.js";
+import { getHeadCommitSha, listCommitShasInRange, pushBranch, verifyCommitSha } from "./git.js";
 import {
   fetchPullRequestDetails,
   fetchPullRequestDiff,
@@ -39,6 +39,11 @@ type RoundOutcome = {
   report: string;
   fixedCount: number;
   pushed: boolean;
+};
+
+type FixCommitWindow = {
+  afterSha: string;
+  commitShas: Set<string>;
 };
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
@@ -232,11 +237,12 @@ async function runFixRound(input: {
 
   let results = normalizeFixResults(input.issues, rawResults);
   const reportedFixedResults = results.filter((result) => result.status === "fixed");
-  let capturedSha: string | undefined;
 
   if (reportedFixedResults.length > 0) {
     try {
-      capturedSha = await captureFixCommitSha(input.exec, input.ctx.repo, beforeSha);
+      const commitWindow = await captureFixCommitWindow(input.exec, input.ctx.repo, beforeSha);
+
+      results = await validateFixResultShas(input.exec, input.ctx.repo, results, commitWindow);
     } catch (error) {
       const message = errorToMessage(error);
 
@@ -253,24 +259,14 @@ async function runFixRound(input: {
     }
   }
 
-  const resultsWithCapturedSha = results.map((result) =>
-    result.status === "fixed"
-      ? {
-          ...result,
-          sha: capturedSha
-        }
-      : result
-  );
-  const fixedResults = resultsWithCapturedSha.filter(
+  const fixedResults = results.filter(
     (result): result is FixIssueResult & { sha: string } =>
       result.status === "fixed" && typeof result.sha === "string"
   );
   let report = input.report;
 
   for (const issue of input.issues) {
-    const result = resultsWithCapturedSha.find(
-      (candidate) => candidate.fingerprint === issueFingerprint(issue)
-    );
+    const result = results.find((candidate) => candidate.fingerprint === issueFingerprint(issue));
     const sha = result?.status === "fixed" && result.sha ? result.sha : "(failed)";
     const summary = result?.summary ?? "The fixer did not report a result. Manual follow-up is required.";
 
@@ -344,11 +340,11 @@ async function recordFailedFixBatch(
   };
 }
 
-async function captureFixCommitSha(
+async function captureFixCommitWindow(
   exec: ExecFn,
   repo: string,
   beforeSha: string
-): Promise<string> {
+): Promise<FixCommitWindow> {
   const afterSha = await getHeadCommitSha(exec, repo);
 
   if (afterSha.length === 0) {
@@ -359,7 +355,70 @@ async function captureFixCommitSha(
     throw new Error("the fixer reported fixed issues, but HEAD did not change.");
   }
 
-  return verifyCommitSha(exec, repo, afterSha);
+  const verifiedAfterSha = await verifyCommitSha(exec, repo, afterSha);
+  const commitShas = new Set(await listCommitShasInRange(exec, repo, beforeSha, verifiedAfterSha));
+
+  if (commitShas.size === 0) {
+    throw new Error("git rev-list did not return any commits created by the fixer.");
+  }
+
+  return {
+    afterSha: verifiedAfterSha,
+    commitShas
+  };
+}
+
+async function validateFixResultShas(
+  exec: ExecFn,
+  repo: string,
+  results: FixIssueResult[],
+  commitWindow: FixCommitWindow
+): Promise<FixIssueResult[]> {
+  const validated: FixIssueResult[] = [];
+
+  for (const result of results) {
+    if (result.status !== "fixed") {
+      validated.push(result);
+      continue;
+    }
+
+    if (!result.sha) {
+      validated.push({
+        ...result,
+        status: "failed",
+        summary: missingFixShaSummary()
+      });
+      continue;
+    }
+
+    try {
+      const verifiedSha = await verifyCommitSha(exec, repo, result.sha);
+
+      if (!commitWindow.commitShas.has(verifiedSha)) {
+        validated.push({
+          ...result,
+          status: "failed",
+          sha: undefined,
+          summary: outOfRangeFixShaSummary(result.sha, commitWindow.afterSha)
+        });
+        continue;
+      }
+
+      validated.push({
+        ...result,
+        sha: verifiedSha
+      });
+    } catch (error) {
+      validated.push({
+        ...result,
+        status: "failed",
+        sha: undefined,
+        summary: invalidFixShaSummary(errorToMessage(error))
+      });
+    }
+  }
+
+  return validated;
 }
 
 function fixerCrashedSummary(message: string): string {
@@ -368,6 +427,18 @@ function fixerCrashedSummary(message: string): string {
 
 function fixedButUncommittedSummary(message: string): string {
   return `The fixer reported a fix, but mendr could not capture a new commit SHA. ${message}`;
+}
+
+function missingFixShaSummary(): string {
+  return "The fixer reported this issue as fixed without a commit SHA. Manual follow-up is required.";
+}
+
+function invalidFixShaSummary(message: string): string {
+  return `The fixer reported a commit SHA that mendr could not verify. ${message}`;
+}
+
+function outOfRangeFixShaSummary(sha: string, afterSha: string): string {
+  return `The fixer reported commit ${sha}, but it was not created in this batch. The batch ended at ${afterSha}.`;
 }
 
 async function pushWithRetry(exec: ExecFn, repo: string, branch: string): Promise<void> {

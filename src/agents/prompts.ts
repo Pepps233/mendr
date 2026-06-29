@@ -4,7 +4,7 @@ const issueSchema =
   '[{"title":"short title","file":"path","line":1,"severity":"low|medium|high|critical","description":"specific finding"}]';
 
 const fixSchema =
-  '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
+  '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","sha":"commit sha","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
 
 export function buildReviewSystemPrompt(): string {
   return [
@@ -68,7 +68,8 @@ export function buildFixPrompt(issues: Issue[], ctx: ReviewContext): string {
     fixSchema,
     "",
     "Each result must include the issue title and fingerprint shown in the issue batch.",
-    "For fixed issues, commit the fix before returning; mendr will capture the resulting commit SHA.",
+    "For fixed issues, include the commit SHA that contains that issue's fix.",
+    "The SHA must be from a commit created during this fixer session.",
     "For failed issues, set status to failed and explain why in two sentences.",
     "",
     `Fix PR ${ctx.pr}.`,

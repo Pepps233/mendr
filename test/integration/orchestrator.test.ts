@@ -181,6 +181,10 @@ class FakeExec {
       return { stdout: this.readHeadSha(), stderr: "", exitCode: 0 };
     }
 
+    if (command === "git" && args[0] === "rev-list") {
+      return { stdout: this.readCommitRange(args[1] ?? ""), stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "push") {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
@@ -201,6 +205,20 @@ class FakeExec {
     this.headReadIndex += 1;
 
     return isAfterFix ? nextSha : previousSha;
+  }
+
+  private readCommitRange(range: string): string {
+    const [beforeSha, afterSha] = range.split("..");
+    const afterIndex = this.shas.indexOf(afterSha);
+
+    if (afterIndex === -1) {
+      return afterSha;
+    }
+
+    const beforeIndex = this.shas.indexOf(beforeSha);
+    const startIndex = beforeIndex === -1 ? 0 : beforeIndex + 1;
+
+    return this.shas.slice(startIndex, afterIndex + 1).reverse().join("\n");
   }
 }
 

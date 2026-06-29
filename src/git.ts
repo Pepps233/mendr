@@ -18,6 +18,22 @@ export async function getHeadCommitSha(exec: ExecFn, repo: string): Promise<stri
   return result.stdout.trim();
 }
 
+export async function listCommitShasInRange(
+  exec: ExecFn,
+  repo: string,
+  beforeSha: string,
+  afterSha: string
+): Promise<string[]> {
+  const result = await execOk(exec, "git", ["rev-list", `${beforeSha}..${afterSha}`], {
+    cwd: repo
+  });
+
+  return result.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
 export async function verifyCommitSha(
   exec: ExecFn,
   repo: string,

@@ -149,6 +149,7 @@ class ScriptedExec {
       prView?: Record<string, unknown>;
       diff?: string;
       shas?: Array<string | Error | null>;
+      headReads?: Array<string | Error | null>;
       pushFailures?: number;
       commentFailures?: number;
     } = {}
@@ -231,6 +232,10 @@ class ScriptedExec {
       return { stdout: value, stderr: "", exitCode: 0 };
     }
 
+    if (command === "git" && args[0] === "rev-list") {
+      return { stdout: this.readCommitRange(args[1] ?? ""), stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "push") {
       this.pushAttempts += 1;
 
@@ -249,8 +254,10 @@ class ScriptedExec {
   };
 
   private readHeadValue(): string | Error | null {
-    if (this.options.shas) {
-      const scripted = this.options.shas[Math.min(this.shaIndex, this.options.shas.length - 1)];
+    const headReads = this.options.headReads ?? this.options.shas;
+
+    if (headReads) {
+      const scripted = headReads[Math.min(this.shaIndex, headReads.length - 1)];
 
       return scripted === undefined ? "abc1234" : scripted;
     }
@@ -263,6 +270,23 @@ class ScriptedExec {
     }
 
     return "abc1234";
+  }
+
+  private readCommitRange(range: string): string {
+    const [beforeSha, afterSha] = range.split("..");
+    const shas = this.options.shas?.filter((sha): sha is string => typeof sha === "string") ?? [
+      "abc1234"
+    ];
+    const afterIndex = shas.indexOf(afterSha);
+
+    if (afterIndex === -1) {
+      return afterSha;
+    }
+
+    const beforeIndex = shas.indexOf(beforeSha);
+    const startIndex = beforeIndex === -1 ? 0 : beforeIndex + 1;
+
+    return shas.slice(startIndex, afterIndex + 1).reverse().join("\n");
   }
 }
 
@@ -502,6 +526,86 @@ describe("orchestrator edge and failure handling", () => {
     expect(events.map((event) => event.status)).toEqual(
       expect.arrayContaining(["Fix failed", "Complete"])
     );
+  });
+
+  it("keeps distinct per-issue SHAs from multiple commits in one fixer batch", async () => {
+    const home = await makeHome();
+    const id = "multi-commit-batch-51dc";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      shas: ["base0000", "range111", "state222"],
+      headReads: ["base0000", "state222"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue, staleStateIssue], []],
+      [
+        [
+          {
+            sha: "range111",
+            summary:
+              "Fixed the changed range calculation. Added coverage for the final modified line."
+          },
+          {
+            sha: "state222",
+            summary:
+              "Fixed stale state rendering. Added coverage for file-backed status reads."
+          }
+        ]
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: range111");
+    expect(reportMarkdown).toContain("- Issue: Refresh stale state reads");
+    expect(reportMarkdown).toContain("- Resolved by: state222");
+    expect(state.issuesFixed).toBe(2);
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
+  });
+
+  it("marks reported fix SHAs outside the fixer commit range unresolved", async () => {
+    const home = await makeHome();
+    const id = "out-of-range-sha-30af";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      shas: ["base0000", "valid111"],
+      headReads: ["base0000", "valid111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          sha: "old9999",
+          summary:
+            "Reported a fix from a commit outside this batch. Expected mendr to reject that attribution."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/not created in this batch|valid111/i);
+    expect(state.issuesFixed).toBe(0);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
   it("records failed fixer results and skips push", async () => {
