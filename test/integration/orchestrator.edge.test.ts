@@ -372,6 +372,35 @@ afterEach(async () => {
 });
 
 describe("orchestrator edge and failure handling", () => {
+  it("rejects invalid persisted effort before starting review work", async () => {
+    const home = await makeHome();
+    const id = "invalid-effort-8be3";
+    const reviewDir = await seedReview(home, id, {
+      agent: "codex",
+      effort: "max"
+    });
+    const exec = new ScriptedExec();
+    const driver = new ScriptedAgentDriver([[]]);
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/invalid codex effort/i);
+
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(state.currentStatus).toMatch(/orchestrator failed/i);
+    expect(state.error).toContain('Invalid codex effort "max"');
+    expect(driver.reviewContexts).toHaveLength(0);
+    expect(findCall(exec.calls, "gh", ["pr", "view"])).toBeUndefined();
+  });
+
   it("writes review markdown and proceeds when the PR has no comments", async () => {
     const home = await makeHome();
     const id = "silent-pr-4c91";

@@ -10,6 +10,8 @@ export type ReviewMeta = {
   branch: string;
   startedAt: string;
   pid: number;
+  model?: string;
+  effort?: string;
   maxRounds?: number;
 };
 

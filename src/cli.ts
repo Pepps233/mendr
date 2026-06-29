@@ -8,7 +8,13 @@ import { Box, Text, render, useApp } from "ink";
 import Spinner from "ink-spinner";
 import React, { useEffect, useState } from "react";
 
-import type { AgentName } from "./agents/types.js";
+import {
+  allowedEffortsForAgent,
+  defaultEffortForAgent,
+  defaultModelForAgent,
+  isEffortForAgent
+} from "./agents/driver.js";
+import type { AgentName, EffortLevel } from "./agents/types.js";
 import { defaultExec, execOk, type ExecFn } from "./exec.js";
 import { getCurrentBranch, getRepoRoot } from "./git.js";
 import { validatePullRequest } from "./github.js";
@@ -32,6 +38,8 @@ export type CliParseResult =
       agent: AgentName;
       pr: string;
       maxRounds: number;
+      model?: string;
+      effort?: EffortLevel;
     }
   | {
       ok: true;
@@ -54,6 +62,8 @@ export type StartReviewOptions = {
   agent: AgentName;
   pr: string;
   maxRounds: number;
+  model?: string;
+  effort?: EffortLevel;
   exec?: ExecFn;
   createId?: () => string;
   spawnDaemon?: (args: SpawnDaemonArgs) => SpawnedDaemon;
@@ -152,10 +162,10 @@ export function parseCliArgs(argv: string[]): CliParseResult {
     };
   }
 
-  const rounds = parseRounds(flags);
+  const startOptions = parseStartFlags(agent, flags);
 
-  if (!rounds.ok) {
-    return rounds;
+  if (!startOptions.ok) {
+    return startOptions;
   }
 
   return {
@@ -163,7 +173,9 @@ export function parseCliArgs(argv: string[]): CliParseResult {
     command: "start",
     agent,
     pr,
-    maxRounds: rounds.maxRounds
+    maxRounds: startOptions.maxRounds,
+    ...(startOptions.model ? { model: startOptions.model } : {}),
+    ...(startOptions.effort ? { effort: startOptions.effort } : {})
   };
 }
 
@@ -171,6 +183,14 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
   const exec = options.exec ?? defaultExec;
   const mendrHome = options.mendrHome ?? defaultMendrHome();
   const cwd = options.cwd ?? process.cwd();
+  const model = options.model ?? defaultModelForAgent(options.agent);
+  const effort = options.effort ?? defaultEffortForAgent(options.agent);
+
+  if (!isEffortForAgent(options.agent, effort)) {
+    throw new Error(
+      `Invalid ${options.agent} effort "${effort}". Expected one of: ${allowedEffortsForAgent(options.agent).join(", ")}.`
+    );
+  }
 
   await preflight({
     exec,
@@ -201,6 +221,8 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     branch,
     startedAt: new Date().toISOString(),
     pid: 0,
+    model,
+    effort,
     maxRounds: options.maxRounds
   });
   await writeState(mendrHome, id, initialState);
@@ -219,6 +241,8 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     branch,
     startedAt: new Date().toISOString(),
     pid: daemon.pid,
+    model,
+    effort,
     maxRounds: options.maxRounds
   });
 
@@ -459,15 +483,32 @@ function normalizePr(value: string | undefined): string | undefined {
   return match?.[1];
 }
 
-function parseRounds(
-  flags: string[]
-): { ok: true; maxRounds: number } | { ok: false; exitCode: 1; error: string } {
+type StartFlagParseResult =
+  | {
+      ok: true;
+      maxRounds: number;
+      model?: string;
+      effort?: EffortLevel;
+    }
+  | { ok: false; exitCode: 1; error: string };
+
+function parseStartFlags(agent: AgentName, flags: string[]): StartFlagParseResult {
   let maxRounds = 3;
+  let model: string | undefined;
+  let effort: EffortLevel | undefined;
 
   for (let index = 0; index < flags.length; index += 1) {
-    const flag = flags[index];
+    const parsedFlag = parseOptionFlag(flags[index]);
+    const flag = parsedFlag.name;
 
-    if (flag !== "--rounds" && flag !== "-r") {
+    if (
+      flag !== "--rounds" &&
+      flag !== "-r" &&
+      flag !== "--model" &&
+      flag !== "-m" &&
+      flag !== "--effort" &&
+      flag !== "-e"
+    ) {
       return {
         ok: false,
         exitCode: 1,
@@ -475,24 +516,82 @@ function parseRounds(
       };
     }
 
-    const rawRounds = flags[index + 1];
-    const parsed = rawRounds ? Number(rawRounds) : NaN;
+    const hasInlineValue = parsedFlag.value !== undefined;
+    const rawValue = parsedFlag.value ?? flags[index + 1];
 
-    if (!Number.isInteger(parsed) || parsed < 1) {
+    if (!rawValue) {
       return {
         ok: false,
         exitCode: 1,
-        error: "Invalid rounds value. Expected a positive integer."
+        error: `Missing value for ${flag}.`
       };
     }
 
-    maxRounds = parsed;
-    index += 1;
+    if (
+      !hasInlineValue &&
+      (flag === "--model" || flag === "-m" || flag === "--effort" || flag === "-e") &&
+      rawValue.startsWith("-")
+    ) {
+      return {
+        ok: false,
+        exitCode: 1,
+        error: `Missing value for ${flag}.`
+      };
+    }
+
+    if (!hasInlineValue) {
+      index += 1;
+    }
+
+    if (flag === "--rounds" || flag === "-r") {
+      const parsed = Number(rawValue);
+
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        return {
+          ok: false,
+          exitCode: 1,
+          error: "Invalid rounds value. Expected a positive integer."
+        };
+      }
+
+      maxRounds = parsed;
+      continue;
+    }
+
+    if (flag === "--model" || flag === "-m") {
+      model = rawValue;
+      continue;
+    }
+
+    if (!isEffortForAgent(agent, rawValue)) {
+      return {
+        ok: false,
+        exitCode: 1,
+        error: `Invalid ${agent} effort. Expected one of: ${allowedEffortsForAgent(agent).join(", ")}.`
+      };
+    }
+
+    effort = rawValue;
   }
 
   return {
     ok: true,
-    maxRounds
+    maxRounds,
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {})
+  };
+}
+
+function parseOptionFlag(raw: string): { name: string; value?: string } {
+  const equalsIndex = raw.indexOf("=");
+
+  if (equalsIndex === -1) {
+    return { name: raw };
+  }
+
+  return {
+    name: raw.slice(0, equalsIndex),
+    value: raw.slice(equalsIndex + 1)
   };
 }
 
@@ -564,37 +663,53 @@ async function main(argv: string[]): Promise<void> {
     .argument("[agent]", "agent CLI to use: claude or codex")
     .argument("[pr]", "pull request number or GitHub pull request URL")
     .option("-r, --rounds <n>", "maximum review and fix iterations", "3")
-    .action(async (agent: string | undefined, prArg: string | undefined, options: { rounds: string }) => {
-      if (!agent && !prArg) {
-        program.help();
+    .option("-m, --model <model>", "agent model override")
+    .option("-e, --effort <effort>", "agent effort override")
+    .action(
+      async (
+        agent: string | undefined,
+        prArg: string | undefined,
+        options: { rounds: string; model?: string; effort?: string }
+      ) => {
+        if (!agent && !prArg) {
+          program.help();
+        }
+
+        if (!isAgent(agent)) {
+          throw new Error("Unsupported agent. Expected claude or codex.");
+        }
+
+        const pr = normalizePr(prArg);
+
+        if (!pr) {
+          throw new Error("Expected a pull request number or GitHub pull request URL.");
+        }
+
+        const flags = [
+          "--rounds",
+          options.rounds,
+          ...(options.model ? ["--model", options.model] : []),
+          ...(options.effort ? ["--effort", options.effort] : [])
+        ];
+        const parsedOptions = parseStartFlags(agent, flags);
+
+        if (!parsedOptions.ok) {
+          throw new Error(parsedOptions.error);
+        }
+
+        const result = await startReview({
+          agent,
+          pr,
+          maxRounds: parsedOptions.maxRounds,
+          model: parsedOptions.model,
+          effort: parsedOptions.effort
+        });
+
+        console.log(`Started ${result.id}`);
+        console.log(`View status: mendr view ${result.id}`);
+        console.log(result.reviewDir);
       }
-
-      if (!isAgent(agent)) {
-        throw new Error("Unsupported agent. Expected claude or codex.");
-      }
-
-      const pr = normalizePr(prArg);
-
-      if (!pr) {
-        throw new Error("Expected a pull request number or GitHub pull request URL.");
-      }
-
-      const parsedRounds = parseRounds(["--rounds", options.rounds]);
-
-      if (!parsedRounds.ok) {
-        throw new Error(parsedRounds.error);
-      }
-
-      const result = await startReview({
-        agent,
-        pr,
-        maxRounds: parsedRounds.maxRounds
-      });
-
-      console.log(`Started ${result.id}`);
-      console.log(`View status: mendr view ${result.id}`);
-      console.log(result.reviewDir);
-    });
+    );
 
   program
     .command("ls")

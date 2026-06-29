@@ -32,7 +32,8 @@ const fixResult = {
 const reviewContext = {
   repo: "/work/mendr",
   pr: "42",
-  model: "gpt-5-codex",
+  model: "gpt-5.5",
+  effort: "xhigh" as const,
   diff: "diff --git a/src/orchestrator.ts b/src/orchestrator.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
   reportMarkdown: "## Summary\n- Issue: Already fixed\n- Resolved by: abc1234"
@@ -78,6 +79,8 @@ describe("Codex agent driver", () => {
         expect.any(String),
         "-m",
         reviewContext.model,
+        "-c",
+        `model_reasoning_effort=${JSON.stringify(reviewContext.effort)}`,
         "--sandbox",
         "workspace-write",
         "-C",
@@ -108,6 +111,8 @@ describe("Codex agent driver", () => {
         expect.any(String),
         "-m",
         reviewContext.model,
+        "-c",
+        `model_reasoning_effort=${JSON.stringify(reviewContext.effort)}`,
         "--sandbox",
         "workspace-write",
         "-C",

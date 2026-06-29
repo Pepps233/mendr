@@ -37,7 +37,8 @@ const fixResult = {
 const reviewContext = {
   repo: "/work/mendr",
   pr: "42",
-  model: "claude-3-5-sonnet-latest",
+  model: "claude-opus-4-8",
+  effort: "high" as const,
   diff: "diff --git a/src/cli.ts b/src/cli.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
   reportMarkdown: "## Summary\n- Issue: Already fixed\n- Resolved by: abc1234"
@@ -126,6 +127,8 @@ describe("Claude agent driver", () => {
         "json",
         "--model",
         reviewContext.model,
+        "--effort",
+        reviewContext.effort,
         "--permission-mode",
         "acceptEdits",
         "--add-dir",
@@ -157,6 +160,8 @@ describe("Claude agent driver", () => {
         "json",
         "--model",
         reviewContext.model,
+        "--effort",
+        reviewContext.effort,
         "--permission-mode",
         "acceptEdits",
         "--add-dir",

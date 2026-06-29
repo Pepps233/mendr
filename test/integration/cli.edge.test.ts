@@ -28,6 +28,8 @@ type StartReviewOptions = {
   agent: "claude" | "codex";
   pr: string;
   maxRounds: number;
+  model?: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
   exec: FakePreflightExec["run"];
   createId: () => string;
   spawnDaemon: (args: unknown) => { pid: number; unref: () => void };
@@ -247,6 +249,28 @@ describe("CLI edge and failure handling", () => {
     ).rejects.toThrow(/gh auth login/i);
 
     await expect(listReviewDirs(home)).resolves.toEqual([]);
+  });
+
+  it("persists selected model and effort for the daemon", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+
+    await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        agent: "codex",
+        model: "gpt-5.4",
+        effort: "high",
+        exec: exec.run
+      })
+    );
+
+    const meta = JSON.parse(
+      await readFile(join(home, "reviews", "swift-otter-3f9a", "meta.json"), "utf8")
+    ) as { model?: string; effort?: string };
+
+    expect(meta.model).toBe("gpt-5.4");
+    expect(meta.effort).toBe("high");
   });
 
   it("uses file-backed state so view and ls do not hang after a daemon crash", async () => {

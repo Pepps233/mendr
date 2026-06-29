@@ -30,6 +30,65 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  it("honors model and effort overrides", () => {
+    expect(
+      parseCliArgs([
+        "node",
+        "mendr",
+        "codex",
+        "42",
+        "--model",
+        "gpt-5.4",
+        "--effort",
+        "high"
+      ])
+    ).toMatchObject({
+      ok: true,
+      command: "start",
+      agent: "codex",
+      pr: "42",
+      maxRounds: 3,
+      model: "gpt-5.4",
+      effort: "high"
+    });
+    expect(
+      parseCliArgs(["node", "mendr", "claude", "42", "-m", "sonnet", "-e", "max"])
+    ).toMatchObject({
+      ok: true,
+      command: "start",
+      agent: "claude",
+      pr: "42",
+      model: "sonnet",
+      effort: "max"
+    });
+  });
+
+  it("rejects unsupported effort values for the selected agent", () => {
+    expect(parseCliArgs(["node", "mendr", "codex", "42", "--effort", "max"])).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: expect.stringContaining("low, medium, high, xhigh")
+    });
+    expect(parseCliArgs(["node", "mendr", "claude", "42", "--effort", "minimal"])).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: expect.stringContaining("low, medium, high, xhigh, max")
+    });
+  });
+
+  it("rejects missing model and effort values", () => {
+    expect(parseCliArgs(["node", "mendr", "codex", "42", "--model", "--effort", "high"])).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: "Missing value for --model."
+    });
+    expect(parseCliArgs(["node", "mendr", "codex", "42", "--effort"])).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: "Missing value for --effort."
+    });
+  });
+
   it("accepts GitHub pull request URLs and normalizes them to PR numbers", () => {
     expect(
       parseCliArgs(["node", "mendr", "claude", "https://github.com/acme/widgets/pull/123"])
