@@ -11,7 +11,7 @@ export function buildReviewPrompt(ctx: ReviewContext): string {
     "You are a review agent for a GitHub pull request.",
     "Review only changes in the provided PR diff.",
     "Do not report issues outside the changed scope.",
-    "Look for changed-scope bugs, correctness issues, maintainability issues, and unnecessary redundancies.",
+    "Look for security issues, correctness issues, maintainability issues, and unnecessary redundancies.",
     "Return an empty JSON array when there are no changed-scope issues.",
     "respond ONLY with JSON matching this schema:",
     issueSchema,

@@ -10,22 +10,6 @@ import {
 } from "./types.js";
 import { buildFixPrompt, buildReviewPrompt } from "./prompts.js";
 
-const systemPrompt = [
-  "You are a review agent for a GitHub pull request.",
-  "Review only changes in the provided PR diff.",
-  "Do not report issues outside the changed scope.",
-  "Look for security issues, correctness issues, maintainability issues, and unnecessary redundancies.",
-  "respond ONLY with JSON matching this schema:",
-  '[{"title":"short title","file":"path","line":1,"severity":"low|medium|high|critical","description":"specific finding"}]'
-].join("\n");
-
-const fixSystemPrompt = [
-  "You are a fixer agent for a GitHub pull request.",
-  "Fix the full issue batch in one fresh session.",
-  "Create incremental commits and map each issue result to a commit SHA or failed status.",
-  "Never include co-author lines, AI references, provider references, commit summary periods, or non-imperative commit summaries."
-].join("\n");
-
 export function parseClaudeIssues(output: string): Issue[] {
   const envelope = extractJsonValue(output);
 
@@ -69,9 +53,7 @@ export function buildClaudeReviewInvocation(ctx: ReviewContext): AgentInvocation
       "--permission-mode",
       "acceptEdits",
       "--add-dir",
-      ctx.repo,
-      "--append-system-prompt",
-      systemPrompt
+      ctx.repo
     ]
   };
 }
@@ -94,9 +76,7 @@ export function buildClaudeFixInvocation(
       "--permission-mode",
       "acceptEdits",
       "--add-dir",
-      ctx.repo,
-      "--append-system-prompt",
-      fixSystemPrompt
+      ctx.repo
     ]
   };
 }
