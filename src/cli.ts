@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
@@ -30,6 +29,7 @@ import {
   readState,
   writeMeta,
   writeState,
+  type ReviewMetaWithDefaults,
   type ReviewState
 } from "./state.js";
 
@@ -88,6 +88,7 @@ export type StartReviewResult = {
 
 export type RenderReviewListOptions = {
   mendrHome?: string;
+  terminalColumns?: number;
 };
 
 export type RenderReviewViewOptions = {
@@ -111,6 +112,16 @@ export type StopReviewOptions = RenderReviewViewOptions & {
 export type LiveReviewViewOptions = RenderReviewViewOptions & {
   pollIntervalMs?: number;
   loadSnapshot?: (options: RenderReviewViewOptions) => Promise<ReviewViewSnapshot>;
+};
+
+type ReviewSessionRecord = {
+  storageId: string;
+  meta: ReviewMetaWithDefaults;
+  state: ReviewState;
+};
+
+type ReviewSession = ReviewSessionRecord & {
+  displayId: number;
 };
 
 const agents = new Set<AgentName>(["claude", "codex"]);
@@ -203,7 +214,9 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
 
   const repo = await getRepoRoot(exec, cwd);
   const branch = await getCurrentBranch(exec, repo);
-  const id = options.createId?.() ?? createReviewId();
+  await ensureMendrHome(mendrHome);
+
+  const id = options.createId?.() ?? (await createReviewId(mendrHome));
   const dir = reviewDir(mendrHome, id);
   const initialState: ReviewState = {
     phase: "starting",
@@ -214,7 +227,6 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     capReached: false
   };
 
-  await ensureMendrHome(mendrHome);
   await writeMeta(mendrHome, id, {
     id,
     agent: options.agent,
@@ -256,59 +268,32 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
 
 export async function renderReviewList(options: RenderReviewListOptions = {}): Promise<string> {
   const mendrHome = options.mendrHome ?? defaultMendrHome();
-  const rows: string[] = ["ID                  Agent   PR    Phase      Status                 Found  Fixed"];
-  let entries: string[];
+  const sessions = await readReviewSessions(mendrHome);
 
-  try {
-    entries = await readdir(reviewsDir(mendrHome));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return "No review sessions.";
-    }
-
-    throw error;
+  if (sessions.length === 0) {
+    return "No review sessions.";
   }
 
-  for (const id of entries.sort()) {
-    try {
-      const [meta, state] = await Promise.all([
-        readMeta(mendrHome, id),
-        readState(mendrHome, id)
-      ]);
+  const terminalColumns = normalizeTerminalColumns(options.terminalColumns);
 
-      rows.push(
-        [
-          meta.id.padEnd(19),
-          meta.agent.padEnd(7),
-          meta.pr.padEnd(5),
-          state.phase.padEnd(10),
-          state.currentStatus.padEnd(22),
-          `${state.issuesFound} found`.padEnd(7),
-          `${state.issuesFixed} fixed`
-        ].join(" ")
-      );
-    } catch {
-      // Incomplete directories are ignored so ls remains useful after crashes.
-    }
-  }
-
-  return rows.length === 1 ? "No review sessions." : rows.join("\n");
+  return sessions.map((session) => formatReviewListItem(session, terminalColumns)).join("\n");
 }
 
 export async function renderReviewViewSnapshot(
   options: RenderReviewViewOptions
 ): Promise<ReviewViewSnapshot> {
   const mendrHome = options.mendrHome ?? defaultMendrHome();
+  const identity = await resolveReviewSessionId(mendrHome, options.reviewId);
   const [meta, state, events] = await Promise.all([
-    readMeta(mendrHome, options.reviewId),
-    readState(mendrHome, options.reviewId),
-    readEvents(mendrHome, options.reviewId)
+    readMeta(mendrHome, identity.storageId),
+    readState(mendrHome, identity.storageId),
+    readEvents(mendrHome, identity.storageId)
   ]);
   const recentEvents = events
     .slice(-5)
     .map((event) => `${event.status}: ${event.detail}`);
   const frame = [
-    `Review ${meta.id}`,
+    `Review ${identity.displayId}`,
     `Agent: ${meta.agent}`,
     `PR: ${meta.pr}`,
     `Status: ${state.currentStatus}`,
@@ -321,7 +306,7 @@ export async function renderReviewViewSnapshot(
 
   return {
     ...state,
-    reviewId: meta.id,
+    reviewId: identity.displayId,
     agent: meta.agent,
     pr: meta.pr,
     recentEvents,
@@ -331,15 +316,19 @@ export async function renderReviewViewSnapshot(
 }
 
 export async function closeReview(options: RenderReviewViewOptions): Promise<void> {
-  await closeReviewSession(options.mendrHome ?? defaultMendrHome(), options.reviewId);
+  const mendrHome = options.mendrHome ?? defaultMendrHome();
+  const identity = await resolveReviewSessionId(mendrHome, options.reviewId);
+
+  await closeReviewSession(mendrHome, identity.storageId);
 }
 
 export async function stopReview(options: StopReviewOptions): Promise<void> {
   const mendrHome = options.mendrHome ?? defaultMendrHome();
   const killProcess = options.killProcess ?? process.kill;
+  const identity = await resolveReviewSessionId(mendrHome, options.reviewId);
   const [meta, state] = await Promise.all([
-    readMeta(mendrHome, options.reviewId),
-    readState(mendrHome, options.reviewId)
+    readMeta(mendrHome, identity.storageId),
+    readState(mendrHome, identity.storageId)
   ]);
   let detail = "No daemon pid was recorded.";
 
@@ -356,13 +345,13 @@ export async function stopReview(options: StopReviewOptions): Promise<void> {
     }
   }
 
-  await writeState(mendrHome, options.reviewId, {
+  await writeState(mendrHome, identity.storageId, {
     ...state,
     phase: "stopped",
     currentStatus: "Stopped",
     done: true
   });
-  await appendEvent(mendrHome, options.reviewId, {
+  await appendEvent(mendrHome, identity.storageId, {
     status: "Stopped",
     detail
   });
@@ -652,8 +641,195 @@ function defaultSpawnDaemon(args: SpawnDaemonArgs): SpawnedDaemon {
   };
 }
 
-function createReviewId(): string {
-  return `review-${randomUUID().slice(0, 8)}`;
+async function createReviewId(mendrHome: string): Promise<string> {
+  const sessions = await readReviewSessions(mendrHome);
+  let candidate =
+    sessions.length === 0
+      ? 1
+      : Math.max(...sessions.map((session) => session.displayId)) + 1;
+
+  for (;;) {
+    const id = String(candidate);
+
+    try {
+      await mkdir(reviewDir(mendrHome, id));
+      return id;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        candidate += 1;
+        continue;
+      }
+
+      throw error;
+    }
+  }
+}
+
+async function readReviewSessions(mendrHome: string): Promise<ReviewSession[]> {
+  let entries: string[];
+
+  try {
+    entries = await readdir(reviewsDir(mendrHome));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw error;
+  }
+
+  const records = await Promise.all(
+    entries.sort().map(async (id): Promise<ReviewSessionRecord | undefined> => {
+      try {
+        const [meta, state] = await Promise.all([
+          readMeta(mendrHome, id),
+          readState(mendrHome, id)
+        ]);
+
+        return {
+          storageId: id,
+          meta,
+          state
+        };
+      } catch {
+        // Incomplete directories are ignored so ls remains useful after crashes.
+        return undefined;
+      }
+    })
+  );
+
+  return assignDisplayIds(records.filter(isReviewSessionRecord));
+}
+
+function assignDisplayIds(records: ReviewSessionRecord[]): ReviewSession[] {
+  const usedIds = new Set(
+    records.flatMap((record) => {
+      const numericId = parsePositiveInteger(record.storageId);
+
+      return numericId === undefined ? [] : [numericId];
+    })
+  );
+  let nextLegacyId = 1;
+  const sessions = [...records]
+    .sort(compareReviewRecords)
+    .map((record): ReviewSession => {
+      const numericId = parsePositiveInteger(record.storageId);
+
+      if (numericId !== undefined) {
+        return {
+          ...record,
+          displayId: numericId
+        };
+      }
+
+      while (usedIds.has(nextLegacyId)) {
+        nextLegacyId += 1;
+      }
+
+      usedIds.add(nextLegacyId);
+
+      return {
+        ...record,
+        displayId: nextLegacyId++
+      };
+    });
+
+  return sessions.sort((a, b) => a.displayId - b.displayId);
+}
+
+function isReviewSessionRecord(
+  record: ReviewSessionRecord | undefined
+): record is ReviewSessionRecord {
+  return record !== undefined;
+}
+
+async function resolveReviewSessionId(
+  mendrHome: string,
+  requestedId: string
+): Promise<{ storageId: string; displayId: string }> {
+  const sessions = await readReviewSessions(mendrHome);
+  const directMatch = sessions.find(
+    (session) => session.storageId === requestedId || session.meta.id === requestedId
+  );
+
+  if (directMatch) {
+    return {
+      storageId: directMatch.storageId,
+      displayId: String(directMatch.displayId)
+    };
+  }
+
+  const numericId = parsePositiveInteger(requestedId);
+  const displayMatch =
+    numericId === undefined
+      ? undefined
+      : sessions.find((session) => session.displayId === numericId);
+
+  if (displayMatch) {
+    return {
+      storageId: displayMatch.storageId,
+      displayId: String(displayMatch.displayId)
+    };
+  }
+
+  return {
+    storageId: requestedId,
+    displayId: requestedId
+  };
+}
+
+function formatReviewListItem(session: ReviewSession, terminalColumns: number): string {
+  const summary = [
+    `${session.displayId}: ${formatAgentLabel(session.meta)}`,
+    `(PR ${session.meta.pr})`,
+    `(${session.state.currentStatus})`,
+    `(Found: ${session.state.issuesFound})`,
+    `(Fixed: ${session.state.issuesFixed})`
+  ].join(" ");
+
+  if (summary.length <= terminalColumns) {
+    return summary;
+  }
+
+  return [
+    `${session.displayId}: ${formatAgentLabel(session.meta)}`,
+    `   PR ${session.meta.pr}`,
+    `   Status: ${session.state.currentStatus}`,
+    `   Found: ${session.state.issuesFound}`,
+    `   Fixed: ${session.state.issuesFixed}`
+  ].join("\n");
+}
+
+function formatAgentLabel(meta: ReviewMetaWithDefaults): string {
+  return meta.effort ? `${meta.agent}(${meta.effort})` : meta.agent;
+}
+
+function normalizeTerminalColumns(columns: number | undefined): number {
+  const resolved = columns ?? process.stdout.columns ?? 80;
+
+  return Number.isFinite(resolved) && resolved > 0 ? resolved : 80;
+}
+
+function compareReviewRecords(a: ReviewSessionRecord, b: ReviewSessionRecord): number {
+  const startedAtDiff = parseTimestamp(a.meta.startedAt) - parseTimestamp(b.meta.startedAt);
+
+  return startedAtDiff || a.storageId.localeCompare(b.storageId);
+}
+
+function parseTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+}
+
+function parsePositiveInteger(value: string): number | undefined {
+  if (!/^[1-9]\d*$/.test(value)) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 async function main(argv: string[]): Promise<void> {
