@@ -1,5 +1,6 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { reviewDir, reviewsDir } from "./paths.js";
 
 export type ReviewMeta = {
   id: string;
@@ -36,6 +37,7 @@ export type ReviewEvent = ReviewEventInput & {
 };
 
 export async function writeMeta(home: string, id: string, meta: ReviewMeta): Promise<void> {
+  await ensureMendrHome(home);
   await writeJson(home, id, "meta.json", meta);
 }
 
@@ -49,6 +51,7 @@ export async function readMeta(home: string, id: string): Promise<ReviewMetaWith
 }
 
 export async function writeState(home: string, id: string, state: ReviewState): Promise<void> {
+  await ensureMendrHome(home);
   await writeJson(home, id, "state.json", state);
 }
 
@@ -69,6 +72,14 @@ export async function appendEvent(
 
   await mkdir(dir, { recursive: true });
   await appendFile(join(dir, "events.log"), `${line}\n`, "utf8");
+}
+
+export async function ensureMendrHome(home: string): Promise<void> {
+  await mkdir(reviewsDir(home), { recursive: true });
+}
+
+export async function closeReviewSession(home: string, id: string): Promise<void> {
+  await rm(reviewDir(home, id), { recursive: true, force: true });
 }
 
 export async function readEvents(home: string, id: string): Promise<ReviewEvent[]> {
@@ -95,10 +106,6 @@ export async function readEvents(home: string, id: string): Promise<ReviewEvent[
         return [];
       }
     });
-}
-
-function reviewDir(home: string, id: string): string {
-  return join(home, "reviews", id);
 }
 
 async function writeJson(

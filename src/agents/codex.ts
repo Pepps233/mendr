@@ -1,9 +1,12 @@
 import {
   type AgentInvocation,
+  type FixIssueResult,
   type Issue,
   type ReviewContext,
+  parseFixIssueResultArrayFromText,
   parseIssueArrayFromText
 } from "./types.js";
+import { buildFixPrompt, buildReviewPrompt } from "./prompts.js";
 
 export type CodexReviewInvocationOptions = {
   outputFile: string;
@@ -11,6 +14,10 @@ export type CodexReviewInvocationOptions = {
 
 export function parseCodexIssues(output: string): Issue[] {
   return parseIssueArrayFromText(output);
+}
+
+export function parseCodexFixResults(output: string): FixIssueResult[] {
+  return parseFixIssueResultArrayFromText(output);
 }
 
 export function buildCodexReviewInvocation(
@@ -36,23 +43,26 @@ export function buildCodexReviewInvocation(
   };
 }
 
-function buildReviewPrompt(ctx: ReviewContext): string {
-  return [
-    "You are a review agent for a GitHub pull request.",
-    "Review only changes in the provided PR diff.",
-    "Do not report issues outside the changed scope.",
-    "respond ONLY with JSON matching this schema:",
-    '[{"title":"short title","file":"path","line":1,"severity":"low|medium|high|critical","description":"specific finding"}]',
-    "",
-    `Review PR ${ctx.pr}.`,
-    "",
-    "PR review.md:",
-    ctx.reviewMarkdown,
-    "",
-    "Current report.md:",
-    ctx.reportMarkdown,
-    "",
-    "PR diff:",
-    ctx.diff
-  ].join("\n");
+export function buildCodexFixInvocation(
+  issues: Issue[],
+  ctx: ReviewContext,
+  options: CodexReviewInvocationOptions
+): AgentInvocation {
+  const prompt = buildFixPrompt(issues, ctx);
+
+  return {
+    command: "codex",
+    args: [
+      "exec",
+      prompt,
+      "-m",
+      ctx.model,
+      "--sandbox",
+      "workspace-write",
+      "-C",
+      ctx.repo,
+      "--output-last-message",
+      options.outputFile
+    ]
+  };
 }

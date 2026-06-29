@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { buildCodexReviewInvocation, parseCodexIssues } from "../../src/agents/codex.js";
+import {
+  buildCodexFixInvocation,
+  buildCodexReviewInvocation,
+  parseCodexIssues
+} from "../../src/agents/codex.js";
+import { buildFixPrompt, buildReviewPrompt } from "../../src/agents/prompts.js";
 import { AgentParseError } from "../../src/agents/types.js";
 
 const issue = {
@@ -67,9 +72,38 @@ describe("Codex agent driver", () => {
       ])
     );
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
+    expect(prompt).toBe(buildReviewPrompt(reviewContext));
     expect(prompt).toContain("review agent");
+    expect(prompt).toContain("security issues");
+    expect(prompt).not.toContain("changed-scope bugs");
     expect(prompt).toContain("respond ONLY with JSON");
     expect(prompt).toContain(reviewContext.diff);
     expect(prompt).toContain(reviewContext.reportMarkdown);
+  });
+
+  it("builds the documented one-shot Codex fix invocation from the shared prompt", () => {
+    const outputFile = "/tmp/mendr-codex-final-message.json";
+    const invocation = buildCodexFixInvocation([issue], reviewContext, { outputFile });
+    const prompt = invocation.args[1];
+
+    expect(invocation.command).toBe("codex");
+    expect(invocation.args).toEqual(
+      expect.arrayContaining([
+        "exec",
+        expect.any(String),
+        "-m",
+        reviewContext.model,
+        "--sandbox",
+        "workspace-write",
+        "-C",
+        reviewContext.repo,
+        "--output-last-message",
+        outputFile
+      ])
+    );
+    expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
+    expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
+    expect(prompt).toContain("fixer agent");
+    expect(prompt).toContain("Do not include co-author lines");
   });
 });

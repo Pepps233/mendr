@@ -8,6 +8,16 @@ export type Issue = {
   description: string;
 };
 
+export type FixIssueStatus = "fixed" | "failed";
+
+export type FixIssueResult = {
+  title: string;
+  fingerprint: string;
+  status: FixIssueStatus;
+  sha?: string;
+  summary: string;
+};
+
 export type ReviewContext = {
   repo: string;
   pr: string;
@@ -15,6 +25,11 @@ export type ReviewContext = {
   diff: string;
   reviewMarkdown: string;
   reportMarkdown: string;
+};
+
+export type AgentDriver = {
+  review(ctx: ReviewContext): Promise<Issue[]>;
+  fix(issues: Issue[], ctx: ReviewContext): Promise<FixIssueResult[]>;
 };
 
 export type AgentInvocation = {
@@ -79,6 +94,43 @@ export function parseIssueArrayFromText(text: string): Issue[] {
   return value.map(parseIssue);
 }
 
+export function parseFixIssueResultArrayFromText(text: string): FixIssueResult[] {
+  const value = extractJsonValue(text);
+
+  if (!Array.isArray(value)) {
+    throw new AgentParseError("Agent JSON payload must be a fix result array.");
+  }
+
+  return value.map(parseFixIssueResult);
+}
+
+export function issueFingerprint(issue: Issue): string {
+  return [
+    normalizeFingerprintPart(issue.title),
+    normalizeFingerprintPart(issue.file),
+    String(issue.line),
+    normalizeFingerprintPart(issue.description)
+  ].join("|");
+}
+
+export function dedupeIssues(issues: Issue[]): Issue[] {
+  const seen = new Set<string>();
+  const deduped: Issue[] = [];
+
+  for (const issue of issues) {
+    const fingerprint = issueFingerprint(issue);
+
+    if (seen.has(fingerprint)) {
+      continue;
+    }
+
+    seen.add(fingerprint);
+    deduped.push(issue);
+  }
+
+  return deduped;
+}
+
 function parseIssue(value: unknown): Issue {
   if (!isRecord(value)) {
     throw new AgentParseError("Agent issue must be an object.");
@@ -104,6 +156,46 @@ function parseIssue(value: unknown): Issue {
     severity,
     description
   };
+}
+
+function parseFixIssueResult(value: unknown): FixIssueResult {
+  if (!isRecord(value)) {
+    throw new AgentParseError("Agent fix result must be an object.");
+  }
+
+  const { title, fingerprint, status, summary } = value;
+  const sha = readOptionalString(value, "sha") ?? readOptionalString(value, "commitSha");
+
+  if (
+    typeof title !== "string" ||
+    typeof fingerprint !== "string" ||
+    (status !== "fixed" && status !== "failed") ||
+    typeof summary !== "string"
+  ) {
+    throw new AgentParseError("Agent fix result has an invalid schema.");
+  }
+
+  if (status === "fixed" && typeof sha !== "string") {
+    throw new AgentParseError("Fixed agent result must include a commit SHA.");
+  }
+
+  return {
+    title,
+    fingerprint,
+    status,
+    sha,
+    summary
+  };
+}
+
+function readOptionalString(value: Record<string, unknown>, key: string): string | undefined {
+  const raw = value[key];
+
+  return typeof raw === "string" && raw.trim().length > 0 ? raw : undefined;
+}
+
+function normalizeFingerprintPart(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function findFirstJsonCandidate(text: string): string | undefined {

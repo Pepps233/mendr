@@ -6,6 +6,8 @@ export type ResolvedIssueEntry = {
   summary: string;
 };
 
+export type IssueResultEntry = ResolvedIssueEntry;
+
 export type RoundCapNote = {
   maxRounds: number;
   openIssues: Issue[];
@@ -21,6 +23,32 @@ export function appendResolvedIssue(report: string, entry: ResolvedIssueEntry): 
   }
 
   return appendLines(normalized, [issueLine, shaLine, `- ${entry.summary}`]);
+}
+
+export function appendIssueResult(report: string, entry: IssueResultEntry): string {
+  return appendResolvedIssue(report, entry);
+}
+
+export function appendNoIssuesFound(report: string): string {
+  const normalized = ensureSummary(report);
+  const line = "- No changed-scope issues found.";
+
+  if (normalized.includes(line)) {
+    return report;
+  }
+
+  return appendLines(normalized, [line]);
+}
+
+export function appendFailureNote(report: string, message: string): string {
+  const normalized = ensureSummary(report);
+  const line = `- Failure: ${message}`;
+
+  if (normalized.includes(line)) {
+    return report;
+  }
+
+  return appendLines(normalized, [line]);
 }
 
 export function appendRoundCapNote(report: string, note: RoundCapNote): string {

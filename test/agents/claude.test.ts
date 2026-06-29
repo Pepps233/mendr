@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { buildClaudeReviewInvocation, parseClaudeIssues } from "../../src/agents/claude.js";
+import {
+  buildClaudeFixInvocation,
+  buildClaudeReviewInvocation,
+  parseClaudeIssues
+} from "../../src/agents/claude.js";
+import { buildFixPrompt, buildReviewPrompt } from "../../src/agents/prompts.js";
 import { AgentParseError } from "../../src/agents/types.js";
 
 const issue = {
@@ -67,9 +72,7 @@ describe("Claude agent driver", () => {
   it("builds the documented one-shot Claude review invocation", () => {
     const invocation = buildClaudeReviewInvocation(reviewContext);
     const promptIndex = invocation.args.indexOf("-p") + 1;
-    const systemPromptIndex = invocation.args.indexOf("--append-system-prompt") + 1;
     const prompt = invocation.args[promptIndex];
-    const systemPrompt = invocation.args[systemPromptIndex];
 
     expect(invocation.command).toBe("claude");
     expect(invocation.args).toEqual(
@@ -83,15 +86,42 @@ describe("Claude agent driver", () => {
         "--permission-mode",
         "acceptEdits",
         "--add-dir",
-        reviewContext.repo,
-        "--append-system-prompt",
-        expect.any(String)
+        reviewContext.repo
       ])
     );
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
-    expect(systemPrompt).toContain("review agent");
-    expect(systemPrompt).toContain("respond ONLY with JSON");
+    expect(invocation.args).not.toContain("--append-system-prompt");
+    expect(prompt).toBe(buildReviewPrompt(reviewContext));
+    expect(prompt).toContain("security issues");
+    expect(prompt).not.toContain("changed-scope bugs");
     expect(prompt).toContain(reviewContext.diff);
     expect(prompt).toContain(reviewContext.reportMarkdown);
+  });
+
+  it("builds the documented one-shot Claude fix invocation from the shared prompt", () => {
+    const invocation = buildClaudeFixInvocation([issue], reviewContext);
+    const promptIndex = invocation.args.indexOf("-p") + 1;
+    const prompt = invocation.args[promptIndex];
+
+    expect(invocation.command).toBe("claude");
+    expect(invocation.args).toEqual(
+      expect.arrayContaining([
+        "-p",
+        expect.any(String),
+        "--output-format",
+        "json",
+        "--model",
+        reviewContext.model,
+        "--permission-mode",
+        "acceptEdits",
+        "--add-dir",
+        reviewContext.repo
+      ])
+    );
+    expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
+    expect(invocation.args).not.toContain("--append-system-prompt");
+    expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
+    expect(prompt).toContain("fixer agent");
+    expect(prompt).toContain("Do not include co-author lines");
   });
 });
