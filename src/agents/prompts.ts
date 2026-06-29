@@ -8,7 +8,7 @@ const fixSchema =
 
 export function buildReviewSystemPrompt(): string {
   return [
-    "You are the REVIEW agent in the mendr pull request review loop.",
+    "You are the REVIEW agent in the pull request review loop.",
     "Report only issues that are strictly inside the provided PR diff scope.",
     "Respond only with JSON matching the requested issue schema."
   ].join("\n");
@@ -16,7 +16,7 @@ export function buildReviewSystemPrompt(): string {
 
 export function buildFixSystemPrompt(): string {
   return [
-    "You are the FIX agent in the mendr pull request review loop.",
+    "You are the FIX agent in the pull request review loop.",
     "Fix only the supplied issue batch and stay inside the changed PR scope.",
     "Respond only with JSON matching the requested fix-result schema."
   ].join("\n");
