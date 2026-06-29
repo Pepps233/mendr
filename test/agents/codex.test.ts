@@ -25,6 +25,12 @@ const fixResult = {
     "preserve report context|src/orchestrator.ts|88|the next review round must receive the updated report markdown.",
   status: "fixed",
   sha: "def5678",
+  commitMessage: [
+    "fix(orchestrator): pass report context",
+    "",
+    "- Threads report markdown into the next review context",
+    "- Covers multi-round context handoff"
+  ].join("\n"),
   summary:
     "Threaded report markdown into the next review context. Added coverage for multi-round context handoff."
 };
@@ -127,6 +133,8 @@ describe("Codex agent driver", () => {
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
     expect(prompt).toContain("Do not create commits");
+    expect(prompt).toContain("\"commitMessage\"");
+    expect(prompt).toContain("mendr will stage, commit with your commitMessage");
     expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });

@@ -24,6 +24,7 @@ type ReviewContext = {
 type FixResult = {
   status?: "fixed" | "failed";
   sha?: string;
+  commitMessage?: string;
   summary: string;
 };
 
@@ -119,6 +120,17 @@ function findCall(calls: ExecCall[], command: string, args: string[]) {
 function callCwd(call: ExecCall): string | undefined {
   return (call.options as { cwd?: string } | undefined)?.cwd;
 }
+
+function callInput(call: ExecCall): string | undefined {
+  return (call.options as { input?: string } | undefined)?.input;
+}
+
+const defaultCommitMessage = [
+  "fix(range): include changed range end",
+  "",
+  "- Keeps the final modified line inside the reviewed diff range",
+  "- Covers boundary handling through the parent-created commit"
+].join("\n");
 
 class FakeExec {
   readonly calls: ExecCall[] = [];
@@ -301,6 +313,10 @@ class FakeAgentDriver {
       fingerprint: issueFingerprint(issue),
       status: scripted.status ?? "fixed",
       sha: scripted.status === "failed" ? undefined : scripted.sha,
+      commitMessage:
+        scripted.status === "failed"
+          ? undefined
+          : scripted.commitMessage ?? defaultCommitMessage,
       summary: scripted.summary
     }));
   }
@@ -322,6 +338,12 @@ describe("orchestrator integration", () => {
       [[rangeIssue], []],
       [
         {
+          commitMessage: [
+            "fix(range): include changed range end",
+            "",
+            "- Makes changed range handling include the upper bound",
+            "- Covers the final modified line with a regression check"
+          ].join("\n"),
           summary:
             "Made the changed range inclusive at the upper bound. Added a regression check for the final modified line."
         }
@@ -367,9 +389,18 @@ describe("orchestrator integration", () => {
       status: "fixed",
       commitSha: "abc1234"
     });
-    expect(findCall(exec.calls, "git", ["commit"])?.args).toEqual(
-      expect.arrayContaining(["-m", "fix(src): resolve Prevent off-by-one diff ranges"])
-    );
+    const commitCall = findCall(exec.calls, "git", ["commit"]);
+    const expectedCommitMessage = [
+      "fix(range): include changed range end",
+      "",
+      "- Makes changed range handling include the upper bound",
+      "- Covers the final modified line with a regression check"
+    ].join("\n");
+
+    expect(commitCall?.args).toEqual(["commit", "-F", "-"]);
+    expect(callInput(commitCall!)).toBe(`${expectedCommitMessage}\n`);
+    expect(callInput(commitCall!)).not.toContain("Resolve reviewed issue");
+    expect(callInput(commitCall!)).not.toContain(issueFingerprint(rangeIssue));
     expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
       "push",
       "origin",

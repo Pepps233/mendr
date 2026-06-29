@@ -52,10 +52,12 @@ export async function stageAll(exec: ExecFn, repo: string): Promise<void> {
 export async function commitStaged(
   exec: ExecFn,
   repo: string,
-  subject: string,
-  body: string
+  message: string
 ): Promise<string> {
-  await execOk(exec, "git", ["commit", "-m", subject, "-m", body], { cwd: repo });
+  await execOk(exec, "git", ["commit", "-F", "-"], {
+    cwd: repo,
+    input: `${message.trim()}\n`
+  });
 
   return getHeadCommitSha(exec, repo);
 }

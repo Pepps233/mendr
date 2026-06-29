@@ -17,6 +17,7 @@ export type FixIssueResult = {
   fingerprint: string;
   status: FixIssueStatus;
   sha?: string;
+  commitMessage?: string;
   summary: string;
 };
 
@@ -168,6 +169,7 @@ function parseFixIssueResult(value: unknown): FixIssueResult {
 
   const { title, fingerprint, status, summary } = value;
   const sha = readOptionalString(value, "sha") ?? readOptionalString(value, "commitSha");
+  const commitMessage = readOptionalString(value, "commitMessage");
 
   if (
     typeof title !== "string" ||
@@ -183,6 +185,7 @@ function parseFixIssueResult(value: unknown): FixIssueResult {
     fingerprint,
     status,
     sha,
+    commitMessage,
     summary
   };
 }

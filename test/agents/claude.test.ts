@@ -30,6 +30,12 @@ const fixResult = {
     "validate pr urls|src/cli.ts|44|the parser accepts malformed pull request urls.",
   status: "fixed",
   sha: "abc1234",
+  commitMessage: [
+    "fix(cli): validate pull request urls",
+    "",
+    "- Rejects malformed pull request URLs before review setup",
+    "- Covers parser behavior for invalid GitHub PR inputs"
+  ].join("\n"),
   summary:
     "Tightened pull request URL parsing. Added coverage for malformed GitHub pull request URLs."
 };
@@ -175,6 +181,8 @@ describe("Claude agent driver", () => {
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
     expect(prompt).toContain("Do not create commits");
+    expect(prompt).toContain("\"commitMessage\"");
+    expect(prompt).toContain("mendr will stage, commit with your commitMessage");
     expect(prompt).not.toContain("sha\":\"commit sha");
   });
 });

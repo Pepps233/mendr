@@ -357,6 +357,17 @@ async function runSingleIssueFix(input: {
     };
   }
 
+  const commitMessage = normalizeCommitMessage(result.commitMessage);
+
+  if (!commitMessage) {
+    await resetFailedIssue(input);
+
+    return {
+      status: "failed",
+      summary: missingCommitMessageSummary()
+    };
+  }
+
   const status = await getPorcelainStatus(input.exec, input.ctx.repo);
 
   if (status.length === 0) {
@@ -374,8 +385,7 @@ async function runSingleIssueFix(input: {
     const sha = await commitStaged(
       input.exec,
       input.ctx.repo,
-      commitSubject(attempt.issue),
-      commitBody(attempt.issue)
+      commitMessage
     );
 
     return {
@@ -410,25 +420,14 @@ function noDiffSummary(): string {
   return "The fixer reported this issue as fixed, but did not leave any file changes to commit.";
 }
 
-function commitSubject(issue: Issue): string {
-  return `fix(${commitScope(issue.file)}): resolve ${sanitizeCommitText(issue.title)}`;
+function missingCommitMessageSummary(): string {
+  return "The fixer reported this issue as fixed, but did not provide a commit message.";
 }
 
-function commitBody(issue: Issue): string {
-  return [
-    `- Resolve reviewed issue: ${sanitizeCommitText(issue.title)}`,
-    `- Record mendr issue fingerprint: ${issueFingerprint(issue)}`
-  ].join("\n");
-}
+function normalizeCommitMessage(message: string | undefined): string | undefined {
+  const normalized = message?.replace(/\r\n?/g, "\n").trim();
 
-function commitScope(file: string): string {
-  const firstSegment = file.split("/").find((segment) => segment.trim().length > 0);
-
-  return sanitizeCommitText(firstSegment ?? "repo").slice(0, 32) || "repo";
-}
-
-function sanitizeCommitText(value: string): string {
-  return value.trim().replace(/\s+/g, " ").replace(/[.\n\r]+$/g, "");
+  return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
 async function pushWithRetry(exec: ExecFn, repo: string, branch: string): Promise<void> {
