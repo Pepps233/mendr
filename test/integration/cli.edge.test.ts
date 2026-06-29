@@ -339,6 +339,31 @@ describe("CLI edge and failure handling", () => {
     ]);
   });
 
+  it("removes the session worktree when daemon startup fails", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+    const spawnDaemon = vi.fn(() => {
+      throw new Error("daemon failed to start");
+    });
+
+    await expect(
+      startReview(
+        makeStartOptions({
+          mendrHome: home,
+          exec: exec.run,
+          spawnDaemon
+        })
+      )
+    ).rejects.toThrow(/daemon failed to start/i);
+
+    await expect(listReviewDirs(home)).resolves.toEqual([]);
+    expect(
+      exec.calls.find(
+        (call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "remove"
+      )?.args
+    ).toEqual(["worktree", "remove", "--force", join(home, "worktrees", "session-1-pr-42")]);
+  });
+
   it("persists the fork head repository push remote", async () => {
     const home = await makeHome();
     const exec = new FakePreflightExec({

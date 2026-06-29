@@ -246,56 +246,63 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     capReached: false
   };
 
+  let worktreeCreated = false;
+
   try {
     await mkdir(worktreesDir(mendrHome), { recursive: true });
     await fetchPullRequestHeadRef(exec, repo, options.pr, worktreeRef);
     await createDetachedWorktree(exec, repo, worktreePath, worktreeRef);
+    worktreeCreated = true;
+
+    await writeMeta(mendrHome, id, {
+      id,
+      agent: options.agent,
+      pr: options.pr,
+      repo,
+      branch,
+      branchPushRemote,
+      worktreePath,
+      startedAt,
+      pid: 0,
+      model,
+      effort,
+      maxRounds: options.maxRounds
+    });
+    await writeState(mendrHome, id, initialState);
+
+    const daemon = (options.spawnDaemon ?? defaultSpawnDaemon)({
+      mendrHome,
+      reviewId: id
+    });
+
+    daemon.unref();
+    await writeMeta(mendrHome, id, {
+      id,
+      agent: options.agent,
+      pr: options.pr,
+      repo,
+      branch,
+      branchPushRemote,
+      worktreePath,
+      startedAt,
+      pid: daemon.pid,
+      model,
+      effort,
+      maxRounds: options.maxRounds
+    });
+
+    return {
+      id,
+      reviewDir: dir
+    };
   } catch (error) {
+    if (worktreeCreated) {
+      await removeWorktree(exec, repo, worktreePath);
+    }
+
     await closeReviewSession(mendrHome, id);
     throw error;
   }
-
-  await writeMeta(mendrHome, id, {
-    id,
-    agent: options.agent,
-    pr: options.pr,
-    repo,
-    branch,
-    branchPushRemote,
-    worktreePath,
-    startedAt,
-    pid: 0,
-    model,
-    effort,
-    maxRounds: options.maxRounds
-  });
-  await writeState(mendrHome, id, initialState);
-
-  const daemon = (options.spawnDaemon ?? defaultSpawnDaemon)({
-    mendrHome,
-    reviewId: id
-  });
-
-  daemon.unref();
-  await writeMeta(mendrHome, id, {
-    id,
-    agent: options.agent,
-    pr: options.pr,
-    repo,
-    branch,
-    branchPushRemote,
-    worktreePath,
-    startedAt,
-    pid: daemon.pid,
-    model,
-    effort,
-    maxRounds: options.maxRounds
-  });
-
-  return {
-    id,
-    reviewDir: dir
-  };
 }
 
 function pullRequestHeadRef(pr: string): string {
