@@ -43,6 +43,7 @@ export const defaultExec: ExecFn = async (command, args, options = {}) => {
     cwd: options.cwd,
     env: options.env,
     input: options.input,
+    stdin: options.input === undefined ? "ignore" : "pipe",
     timeout: options.timeoutMs,
     reject: false
   });

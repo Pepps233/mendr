@@ -23,6 +23,26 @@ afterEach(async () => {
 });
 
 describe("default exec", () => {
+  it("closes child stdin when no input is provided", async () => {
+    const result = await defaultExec(
+      process.execPath,
+      [
+        "-e",
+        [
+          "process.stdin.resume();",
+          "process.stdin.on('end', () => process.stdout.write('stdin closed'));"
+        ].join(" ")
+      ],
+      { timeoutMs: 1000 }
+    );
+
+    expect(result).toMatchObject({
+      stdout: "stdin closed",
+      stderr: "",
+      exitCode: 0
+    });
+  });
+
   it("streams child stdout and stderr to files before the process exits", async () => {
     const outputDir = await makeTempDir();
     const stdoutFile = join(outputDir, "agent.stdout.log");
