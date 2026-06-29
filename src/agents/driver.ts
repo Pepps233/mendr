@@ -17,6 +17,7 @@ import type {
   AgentDriver,
   AgentInvocation,
   AgentName,
+  EffortLevel,
   FixIssueResult,
   Issue,
   ReviewContext
@@ -29,12 +30,40 @@ export type CreateAgentDriverOptions = {
   outputDir: string;
 };
 
+const codexEfforts = ["low", "medium", "high", "xhigh"] as const;
+const claudeEfforts = ["low", "medium", "high", "xhigh", "max"] as const;
+
 export function defaultModelForAgent(agent: AgentName): string {
   if (agent === "codex") {
-    return process.env.MENDR_CODEX_MODEL ?? "gpt-5-codex";
+    return process.env.MENDR_CODEX_MODEL ?? "gpt-5.5";
   }
 
-  return process.env.MENDR_CLAUDE_MODEL ?? "claude-3-5-sonnet-latest";
+  return process.env.MENDR_CLAUDE_MODEL ?? "claude-opus-4-8";
+}
+
+export function defaultEffortForAgent(agent: AgentName): EffortLevel {
+  const effort =
+    agent === "codex" ? process.env.MENDR_CODEX_EFFORT : process.env.MENDR_CLAUDE_EFFORT;
+
+  if (effort) {
+    if (isEffortForAgent(agent, effort)) {
+      return effort;
+    }
+
+    throw new Error(
+      `Invalid ${agent} effort "${effort}". Expected one of: ${allowedEffortsForAgent(agent).join(", ")}.`
+    );
+  }
+
+  return agent === "codex" ? "xhigh" : "high";
+}
+
+export function allowedEffortsForAgent(agent: AgentName): readonly EffortLevel[] {
+  return agent === "codex" ? codexEfforts : claudeEfforts;
+}
+
+export function isEffortForAgent(agent: AgentName, effort: string): effort is EffortLevel {
+  return (allowedEffortsForAgent(agent) as readonly string[]).includes(effort);
 }
 
 export function createAgentDriver(options: CreateAgentDriverOptions): AgentDriver {

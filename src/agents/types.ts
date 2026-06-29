@@ -1,5 +1,7 @@
 export type AgentName = "claude" | "codex";
 
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+
 export type Issue = {
   title: string;
   file: string;
@@ -22,6 +24,7 @@ export type ReviewContext = {
   repo: string;
   pr: string;
   model: string;
+  effort: EffortLevel;
   diff: string;
   reviewMarkdown: string;
   reportMarkdown: string;

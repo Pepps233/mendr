@@ -1,7 +1,13 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { createAgentDriver, defaultModelForAgent } from "./agents/driver.js";
+import {
+  allowedEffortsForAgent,
+  createAgentDriver,
+  defaultEffortForAgent,
+  defaultModelForAgent,
+  isEffortForAgent
+} from "./agents/driver.js";
 import {
   dedupeIssues,
   issueFingerprint,
@@ -66,7 +72,8 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
 
     const meta = await readMeta(options.mendrHome, options.reviewId);
     const agent = parseAgentName(meta.agent);
-    const model = defaultModelForAgent(agent);
+    const model = meta.model ?? defaultModelForAgent(agent);
+    const effort = resolveEffort(agent, meta.effort);
     const agentDriver =
       options.agentDriver ??
       createAgentDriver({
@@ -97,6 +104,7 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         repo: meta.repo,
         pr: meta.pr,
         model,
+        effort,
         diff,
         reviewMarkdown,
         reportMarkdown: report
@@ -569,6 +577,20 @@ function parseAgentName(agent: string): AgentName {
   }
 
   throw new Error(`Unsupported agent: ${agent}`);
+}
+
+function resolveEffort(agent: AgentName, effort: string | undefined): ReviewContext["effort"] {
+  if (!effort) {
+    return defaultEffortForAgent(agent);
+  }
+
+  if (isEffortForAgent(agent, effort)) {
+    return effort;
+  }
+
+  throw new Error(
+    `Invalid ${agent} effort "${effort}" in review metadata. Expected one of: ${allowedEffortsForAgent(agent).join(", ")}.`
+  );
 }
 
 function errorToMessage(error: unknown): string {

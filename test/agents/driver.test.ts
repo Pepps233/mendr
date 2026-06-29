@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAgentDriver } from "../../src/agents/driver.js";
+import {
+  defaultEffortForAgent,
+  defaultModelForAgent,
+  createAgentDriver
+} from "../../src/agents/driver.js";
 
 const tmpRoots: string[] = [];
 
@@ -28,6 +32,41 @@ afterEach(async () => {
   );
 });
 
+describe("agent defaults", () => {
+  it("uses requested default models and efforts", () => {
+    const env = snapshotAgentEnv();
+
+    try {
+      clearAgentEnv();
+
+      expect(defaultModelForAgent("codex")).toBe("gpt-5.5");
+      expect(defaultEffortForAgent("codex")).toBe("xhigh");
+      expect(defaultModelForAgent("claude")).toBe("claude-opus-4-8");
+      expect(defaultEffortForAgent("claude")).toBe("high");
+    } finally {
+      restoreAgentEnv(env);
+    }
+  });
+
+  it("honors model and effort environment overrides", () => {
+    const env = snapshotAgentEnv();
+
+    try {
+      process.env.MENDR_CODEX_MODEL = "gpt-5.4";
+      process.env.MENDR_CODEX_EFFORT = "medium";
+      process.env.MENDR_CLAUDE_MODEL = "sonnet";
+      process.env.MENDR_CLAUDE_EFFORT = "xhigh";
+
+      expect(defaultModelForAgent("codex")).toBe("gpt-5.4");
+      expect(defaultEffortForAgent("codex")).toBe("medium");
+      expect(defaultModelForAgent("claude")).toBe("sonnet");
+      expect(defaultEffortForAgent("claude")).toBe("xhigh");
+    } finally {
+      restoreAgentEnv(env);
+    }
+  });
+});
+
 describe("agent driver IO logging", () => {
   it("writes Claude stdout and stderr logs", async () => {
     const outputDir = await makeOutputDir();
@@ -47,7 +86,8 @@ describe("agent driver IO logging", () => {
       driver.review({
         repo: "/work/mendr",
         pr: "42",
-        model: "claude-3-5-sonnet-latest",
+        model: "claude-opus-4-8",
+        effort: "high",
         diff: "diff",
         reviewMarkdown: "# PR",
         reportMarkdown: "## Summary"
@@ -84,7 +124,8 @@ describe("agent driver IO logging", () => {
       driver.review({
         repo: "/work/mendr",
         pr: "42",
-        model: "gpt-5-codex",
+        model: "gpt-5.5",
+        effort: "xhigh",
         diff: "diff",
         reviewMarkdown: "# PR",
         reportMarkdown: "## Summary"
@@ -102,3 +143,29 @@ describe("agent driver IO logging", () => {
     ).resolves.toContain("Persist agent IO");
   });
 });
+
+function snapshotAgentEnv(): Record<string, string | undefined> {
+  return {
+    MENDR_CODEX_MODEL: process.env.MENDR_CODEX_MODEL,
+    MENDR_CODEX_EFFORT: process.env.MENDR_CODEX_EFFORT,
+    MENDR_CLAUDE_MODEL: process.env.MENDR_CLAUDE_MODEL,
+    MENDR_CLAUDE_EFFORT: process.env.MENDR_CLAUDE_EFFORT
+  };
+}
+
+function clearAgentEnv(): void {
+  delete process.env.MENDR_CODEX_MODEL;
+  delete process.env.MENDR_CODEX_EFFORT;
+  delete process.env.MENDR_CLAUDE_MODEL;
+  delete process.env.MENDR_CLAUDE_EFFORT;
+}
+
+function restoreAgentEnv(env: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}

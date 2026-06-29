@@ -22,7 +22,9 @@
 
 Every review and fix step starts a new agent process to isolate reviewer from fixer.
 Claude Code sessions run through `claude -p` with JSON output and repository access through `--add-dir`.
+By default, Claude Code uses `claude-opus-4-8` with `high` effort.
 Codex sessions run through `codex exec` with `--sandbox workspace-write`, `-C <repo>`, and final-message capture.
+By default, Codex uses `gpt-5.5` with `xhigh` effort.
 
 The orchestrator never uses `--continue`, `--resume`, or a reused agent process.
 This keeps each step isolated and releases memory when the child process exits.
@@ -31,7 +33,7 @@ Continuity comes from `report.md`, which is embedded in every subsequent review 
 ## CLI
 
 ```sh
-mendr <agent> <pr> [--rounds <n>]
+mendr <agent> <pr> [--rounds <n>] [--model <model>] [--effort <effort>]
 mendr ls
 mendr view <id>
 mendr stop <id>
@@ -40,6 +42,11 @@ mendr stop <id>
 `agent` must be `claude` or `codex`.
 `pr` may be a pull request number or a pull request URL.
 `--rounds` and `-r` set the maximum review and fix iterations, with a default of `3`.
+`--model` and `-m` override the agent model for that review.
+`--effort` and `-e` override the agent effort for that review.
+Codex accepts `low`, `medium`, `high`, or `xhigh`.
+Claude Code accepts `low`, `medium`, `high`, `xhigh`, or `max`.
+Set `MENDR_CODEX_MODEL`, `MENDR_CODEX_EFFORT`, `MENDR_CLAUDE_MODEL`, or `MENDR_CLAUDE_EFFORT` to change unattended defaults.
 
 ## Example
 
