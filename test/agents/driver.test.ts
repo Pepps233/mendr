@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  agentTimeoutMs,
   defaultEffortForAgent,
   defaultModelForAgent,
   createAgentDriver
@@ -43,6 +44,7 @@ describe("agent defaults", () => {
       expect(defaultEffortForAgent("codex")).toBe("xhigh");
       expect(defaultModelForAgent("claude")).toBe("claude-opus-4-8");
       expect(defaultEffortForAgent("claude")).toBe("high");
+      expect(agentTimeoutMs()).toBe(600000);
     } finally {
       restoreAgentEnv(env);
     }
@@ -56,11 +58,13 @@ describe("agent defaults", () => {
       process.env.MENDR_CODEX_EFFORT = "medium";
       process.env.MENDR_CLAUDE_MODEL = "sonnet";
       process.env.MENDR_CLAUDE_EFFORT = "xhigh";
+      process.env.MENDR_AGENT_TIMEOUT_MS = "30000";
 
       expect(defaultModelForAgent("codex")).toBe("gpt-5.4");
       expect(defaultEffortForAgent("codex")).toBe("medium");
       expect(defaultModelForAgent("claude")).toBe("sonnet");
       expect(defaultEffortForAgent("claude")).toBe("xhigh");
+      expect(agentTimeoutMs()).toBe(30000);
     } finally {
       restoreAgentEnv(env);
     }
@@ -142,6 +146,56 @@ describe("agent driver IO logging", () => {
       readFile(join(outputDir, "codex-review-1.final-message.md"), "utf8")
     ).resolves.toContain("Persist agent IO");
   });
+
+  it("records partial agent output when an invocation times out", async () => {
+    const env = snapshotAgentEnv();
+    const outputDir = await makeOutputDir();
+
+    try {
+      process.env.MENDR_AGENT_TIMEOUT_MS = "50";
+
+      const driver = createAgentDriver({
+        agent: "claude",
+        outputDir,
+        exec: async (_command, _args, options) => {
+          expect(options).toMatchObject({
+            cwd: "/work/mendr",
+            timeoutMs: 50,
+            stdoutFile: join(outputDir, "claude-review-1.stdout.log"),
+            stderrFile: join(outputDir, "claude-review-1.stderr.log")
+          });
+
+          return {
+            stdout: "partial stdout before timeout",
+            stderr: "",
+            exitCode: 124,
+            timedOut: true
+          };
+        }
+      });
+
+      await expect(
+        driver.review({
+          repo: "/work/mendr",
+          pr: "42",
+          model: "claude-opus-4-8",
+          effort: "high",
+          diff: "diff",
+          reviewMarkdown: "# PR",
+          reportMarkdown: "## Summary"
+        })
+      ).rejects.toThrow(/timed out/i);
+
+      await expect(
+        readFile(join(outputDir, "claude-review-1.stdout.log"), "utf8")
+      ).resolves.toBe("partial stdout before timeout");
+      await expect(
+        readFile(join(outputDir, "claude-review-1.stderr.log"), "utf8")
+      ).resolves.toBe("");
+    } finally {
+      restoreAgentEnv(env);
+    }
+  });
 });
 
 function snapshotAgentEnv(): Record<string, string | undefined> {
@@ -149,7 +203,8 @@ function snapshotAgentEnv(): Record<string, string | undefined> {
     MENDR_CODEX_MODEL: process.env.MENDR_CODEX_MODEL,
     MENDR_CODEX_EFFORT: process.env.MENDR_CODEX_EFFORT,
     MENDR_CLAUDE_MODEL: process.env.MENDR_CLAUDE_MODEL,
-    MENDR_CLAUDE_EFFORT: process.env.MENDR_CLAUDE_EFFORT
+    MENDR_CLAUDE_EFFORT: process.env.MENDR_CLAUDE_EFFORT,
+    MENDR_AGENT_TIMEOUT_MS: process.env.MENDR_AGENT_TIMEOUT_MS
   };
 }
 
@@ -158,6 +213,7 @@ function clearAgentEnv(): void {
   delete process.env.MENDR_CODEX_EFFORT;
   delete process.env.MENDR_CLAUDE_MODEL;
   delete process.env.MENDR_CLAUDE_EFFORT;
+  delete process.env.MENDR_AGENT_TIMEOUT_MS;
 }
 
 function restoreAgentEnv(env: Record<string, string | undefined>): void {

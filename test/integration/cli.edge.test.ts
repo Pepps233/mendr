@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  closeReview,
   renderReviewList,
   renderReviewViewSnapshot,
   startReview,
@@ -31,7 +32,7 @@ type StartReviewOptions = {
   model?: string;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   exec: FakePreflightExec["run"];
-  createId: () => string;
+  createId?: () => string;
   spawnDaemon: (args: unknown) => { pid: number; unref: () => void };
 };
 
@@ -283,13 +284,15 @@ describe("CLI edge and failure handling", () => {
     const snapshot = await withTimeout(
       renderReviewViewSnapshot({
         mendrHome: home,
-        reviewId: id
+        reviewId: "1"
       })
     );
 
-    expect(table).toContain(id);
+    expect(table).toContain("1: claude");
+    expect(table).not.toContain(id);
     expect(table).toContain("Resolving issues");
     expect(snapshot).toMatchObject({
+      reviewId: "1",
       done: false,
       currentStatus: "Resolving issues"
     });
@@ -304,7 +307,7 @@ describe("CLI edge and failure handling", () => {
 
     await stopReview({
       mendrHome: home,
-      reviewId: id,
+      reviewId: "1",
       killProcess
     });
 
@@ -316,15 +319,62 @@ describe("CLI edge and failure handling", () => {
     const events = await readFile(join(reviewDir, "events.log"), "utf8");
     const table = await renderReviewList({ mendrHome: home });
 
-    expect(killProcess).toHaveBeenCalledWith(999999, "SIGTERM");
+    expect(killProcess).toHaveBeenCalledWith(-999999, "SIGTERM");
     expect(state).toMatchObject({
       phase: "stopped",
       currentStatus: "Stopped",
       done: true
     });
     expect(events).toContain("Stopped");
-    expect(table).toContain(id);
+    expect(table).toContain("1: claude");
+    expect(table).not.toContain(id);
     expect(table).toContain("Stopped");
+  });
+
+  it("allocates integer ids and resets after all sessions are closed", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+    const spawnDaemon = vi.fn(() => ({
+      pid: 43210,
+      unref: vi.fn()
+    }));
+
+    const first = await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        createId: undefined,
+        exec: exec.run,
+        spawnDaemon
+      })
+    );
+    const second = await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        pr: "77",
+        createId: undefined,
+        exec: exec.run,
+        spawnDaemon
+      })
+    );
+
+    expect(first.id).toBe("1");
+    expect(second.id).toBe("2");
+    await expect(listReviewDirs(home).then((dirs) => dirs.sort())).resolves.toEqual(["1", "2"]);
+
+    await closeReview({ mendrHome: home, reviewId: "1" });
+    await closeReview({ mendrHome: home, reviewId: "2" });
+
+    const reset = await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        createId: undefined,
+        exec: exec.run,
+        spawnDaemon
+      })
+    );
+
+    expect(reset.id).toBe("1");
+    await expect(listReviewDirs(home).then((dirs) => dirs.sort())).resolves.toEqual(["1"]);
   });
 
   it("creates distinct state directories for concurrent reviews", async () => {
@@ -368,8 +418,10 @@ describe("CLI edge and failure handling", () => {
     expect(dirs.sort()).toEqual(["steady-moon-2ab1", "swift-otter-3f9a"]);
     expect(firstMeta).toMatchObject({ id: "swift-otter-3f9a", pr: "42" });
     expect(secondMeta).toMatchObject({ id: "steady-moon-2ab1", pr: "77" });
-    expect(table).toContain("swift-otter-3f9a");
-    expect(table).toContain("steady-moon-2ab1");
+    expect(table).toContain("(PR 42)");
+    expect(table).toContain("(PR 77)");
+    expect(table).not.toContain("swift-otter-3f9a");
+    expect(table).not.toContain("steady-moon-2ab1");
     expect(spawnDaemon).toHaveBeenCalledTimes(2);
   });
 });

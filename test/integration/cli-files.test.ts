@@ -22,6 +22,7 @@ type ReviewMeta = {
   branch: string;
   startedAt: string;
   pid: number;
+  effort?: string;
   maxRounds: number;
 };
 
@@ -91,7 +92,13 @@ describe("CLI file-backed integration", () => {
     await seedReview(
       home,
       "swift-otter-3f9a",
-      { agent: "claude", pr: "42", pid: 1001 },
+      {
+        agent: "claude",
+        pr: "42",
+        pid: 1001,
+        effort: "max",
+        startedAt: "2026-06-28T17:00:00.000Z"
+      },
       {
         phase: "reviewing",
         currentStatus: "Discovering bugs",
@@ -104,7 +111,13 @@ describe("CLI file-backed integration", () => {
     await seedReview(
       home,
       "steady-moon-2ab1",
-      { agent: "codex", pr: "77", pid: 1002 },
+      {
+        agent: "codex",
+        pr: "77",
+        pid: 1002,
+        effort: "high",
+        startedAt: "2026-06-28T17:01:00.000Z"
+      },
       {
         phase: "posting",
         currentStatus: "Posting review",
@@ -116,19 +129,52 @@ describe("CLI file-backed integration", () => {
     );
     await seedReview(home, "missing-state-9999", { agent: "claude", pr: "88" });
 
-    const table = await renderReviewList({ mendrHome: home });
+    const table = await renderReviewList({ mendrHome: home, terminalColumns: 120 });
 
-    expect(table).toContain("swift-otter-3f9a");
-    expect(table).toContain("claude");
-    expect(table).toContain("42");
-    expect(table).toContain("Discovering bugs");
-    expect(table).toMatch(/2\s+found/i);
-    expect(table).toMatch(/1\s+fixed/i);
-    expect(table).toContain("steady-moon-2ab1");
-    expect(table).toContain("codex");
-    expect(table).toContain("77");
-    expect(table).toContain("Posting review");
+    expect(table).toBe(
+      [
+        "1: claude(max) (PR 42) (Discovering bugs) (Found: 2) (Fixed: 1)",
+        "2: codex(high) (PR 77) (Posting review) (Found: 3) (Fixed: 3)"
+      ].join("\n")
+    );
+    expect(table).not.toContain("ID");
+    expect(table).not.toContain("swift-otter-3f9a");
+    expect(table).not.toContain("steady-moon-2ab1");
     expect(table).not.toContain("missing-state-9999");
+  });
+
+  it("renders narrow ls output as labeled review blocks", async () => {
+    const home = await makeHome();
+
+    await seedReview(
+      home,
+      "review-74a2ad4a",
+      {
+        agent: "codex",
+        pr: "14",
+        effort: "high"
+      },
+      {
+        phase: "reviewing",
+        currentStatus: "Discovering bugs",
+        issuesFound: 0,
+        issuesFixed: 0,
+        done: false,
+        capReached: false
+      }
+    );
+
+    const table = await renderReviewList({ mendrHome: home, terminalColumns: 36 });
+
+    expect(table).toBe(
+      [
+        "1: codex(high)",
+        "   PR 14",
+        "   Status: Discovering bugs",
+        "   Found: 0",
+        "   Fixed: 0"
+      ].join("\n")
+    );
   });
 
   it("renders view status from events and reports done when state is complete", async () => {
@@ -162,13 +208,16 @@ describe("CLI file-backed integration", () => {
 
     const activeSnapshot = await renderReviewViewSnapshot({
       mendrHome: home,
-      reviewId: id
+      reviewId: "1"
     });
 
     expect(activeSnapshot).toMatchObject({
+      reviewId: "1",
       done: false,
       currentStatus: "Resolving issues"
     });
+    expect(activeSnapshot.frame).toContain("Review 1");
+    expect(activeSnapshot.frame).not.toContain(id);
     expect(activeSnapshot.frame).toContain("Resolving issues");
     expect(activeSnapshot.frame).toMatch(/2\s+found/i);
     expect(activeSnapshot.frame).toMatch(/1\s+fixed/i);
@@ -209,6 +258,7 @@ describe("CLI file-backed integration", () => {
     });
 
     expect(doneSnapshot).toMatchObject({
+      reviewId: "1",
       done: true,
       currentStatus: "Complete"
     });
