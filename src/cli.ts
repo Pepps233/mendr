@@ -17,9 +17,20 @@ import {
 } from "./agents/driver.js";
 import type { AgentName, EffortLevel } from "./agents/types.js";
 import { defaultExec, execOk, type ExecFn } from "./exec.js";
-import { getCurrentBranch, getRepoRoot } from "./git.js";
+import {
+  createDetachedWorktree,
+  getCurrentBranch,
+  getRepoRoot,
+  removeWorktree
+} from "./git.js";
 import { validatePullRequest } from "./github.js";
-import { defaultMendrHome, reviewDir, reviewsDir } from "./paths.js";
+import {
+  defaultMendrHome,
+  reviewDir,
+  reviewsDir,
+  sessionWorktreePath,
+  worktreesDir
+} from "./paths.js";
 import {
   appendEvent,
   closeReviewSession,
@@ -107,6 +118,10 @@ export type ReviewViewSnapshot = ReviewState & {
 
 export type StopReviewOptions = RenderReviewViewOptions & {
   killProcess?: (pid: number, signal?: NodeJS.Signals) => boolean;
+};
+
+export type CloseReviewOptions = RenderReviewViewOptions & {
+  exec?: ExecFn;
 };
 
 export type LiveReviewViewOptions = RenderReviewViewOptions & {
@@ -214,10 +229,19 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
 
   const repo = await getRepoRoot(exec, cwd);
   const branch = await getCurrentBranch(exec, repo);
+
+  if (branch.length === 0) {
+    throw new Error(
+      "mendr must start from a named branch so fixes can be pushed back to the PR branch."
+    );
+  }
+
   await ensureMendrHome(mendrHome);
 
   const id = options.createId?.() ?? (await createReviewId(mendrHome));
   const dir = reviewDir(mendrHome, id);
+  const worktreePath = sessionWorktreePath(mendrHome, id, options.pr);
+  const startedAt = new Date().toISOString();
   const initialState: ReviewState = {
     phase: "starting",
     currentStatus: "Starting",
@@ -227,13 +251,22 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     capReached: false
   };
 
+  try {
+    await mkdir(worktreesDir(mendrHome), { recursive: true });
+    await createDetachedWorktree(exec, repo, worktreePath, branch);
+  } catch (error) {
+    await closeReviewSession(mendrHome, id);
+    throw error;
+  }
+
   await writeMeta(mendrHome, id, {
     id,
     agent: options.agent,
     pr: options.pr,
     repo,
     branch,
-    startedAt: new Date().toISOString(),
+    worktreePath,
+    startedAt,
     pid: 0,
     model,
     effort,
@@ -253,7 +286,8 @@ export async function startReview(options: StartReviewOptions): Promise<StartRev
     pr: options.pr,
     repo,
     branch,
-    startedAt: new Date().toISOString(),
+    worktreePath,
+    startedAt,
     pid: daemon.pid,
     model,
     effort,
@@ -315,9 +349,22 @@ export async function renderReviewViewSnapshot(
   };
 }
 
-export async function closeReview(options: RenderReviewViewOptions): Promise<void> {
+export async function closeReview(options: CloseReviewOptions): Promise<void> {
   const mendrHome = options.mendrHome ?? defaultMendrHome();
+  const exec = options.exec ?? defaultExec;
   const identity = await resolveReviewSessionId(mendrHome, options.reviewId);
+  const [meta, state] = await Promise.all([
+    readMeta(mendrHome, identity.storageId),
+    readState(mendrHome, identity.storageId)
+  ]);
+
+  if (meta.worktreePath) {
+    if (state.phase !== "complete" && state.phase !== "stopped") {
+      throw new Error("Stop the review or wait for it to complete before closing this session.");
+    }
+
+    await removeWorktree(exec, meta.repo, meta.worktreePath);
+  }
 
   await closeReviewSession(mendrHome, identity.storageId);
 }

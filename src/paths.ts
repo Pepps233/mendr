@@ -14,3 +14,11 @@ export function reviewsDir(mendrHome: string): string {
 export function reviewDir(mendrHome: string, id: string): string {
   return join(reviewsDir(mendrHome), id);
 }
+
+export function worktreesDir(mendrHome: string): string {
+  return join(mendrHome, "worktrees");
+}
+
+export function sessionWorktreePath(mendrHome: string, id: string, pr: string): string {
+  return join(worktreesDir(mendrHome), `session-${id}-pr-${pr}`);
+}

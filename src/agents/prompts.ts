@@ -4,7 +4,7 @@ const issueSchema =
   '[{"title":"short title","file":"path","line":1,"severity":"low|medium|high|critical","description":"specific finding"}]';
 
 const fixSchema =
-  '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","sha":"commit sha","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
+  '[{"title":"issue title","fingerprint":"issue fingerprint","status":"fixed","summary":"exactly two sentences"},{"title":"issue title","fingerprint":"issue fingerprint","status":"failed","summary":"exactly two sentences explaining the failure"}]';
 
 export function buildReviewSystemPrompt(): string {
   return [
@@ -17,7 +17,8 @@ export function buildReviewSystemPrompt(): string {
 export function buildFixSystemPrompt(): string {
   return [
     "You are the FIX agent in the pull request review loop.",
-    "Fix only the supplied issue batch and stay inside the changed PR scope.",
+    "Fix only the supplied issue and stay inside the changed PR scope.",
+    "Do not create commits or push changes.",
     "Respond only with JSON matching the requested fix-result schema."
   ].join("\n");
 }
@@ -53,28 +54,19 @@ export function buildFixPrompt(issues: Issue[], ctx: ReviewContext): string {
 
   return [
     "You are a code fixer agent for a GitHub pull request.",
-    "Fix only the issues listed below and stay inside the changed PR scope.",
-    "Use one fresh session to fix the full issue batch.",
-    "Create incremental commits as you work, with one or more commits mapped back to the issues.",
-    "Commit messages must use exactly this format:",
-    "<type>(<scope>): <short imperative summary>",
-    "",
-    "- <why this change was needed>",
-    "- <why this approach or impact matters>",
-    "",
-    "Commit-message summaries must be imperative and must not end with a period.",
-    "Do not include co-author lines, AI references, provider references, or non-imperative summaries.",
+    "Fix only the single issue listed below and stay inside the changed PR scope.",
+    "Use one fresh session to fix this issue.",
+    "Do not create commits, push changes, or include commit SHAs in the result.",
+    "mendr will stage, commit, record, and push successful fixes after your process exits.",
     "After fixing, respond ONLY with JSON matching this schema:",
     fixSchema,
     "",
-    "Each result must include the issue title and fingerprint shown in the issue batch.",
-    "For fixed issues, include the commit SHA that contains that issue's fix.",
-    "The SHA must be from a commit created during this fixer session.",
+    "The result must include the issue title and fingerprint shown in the issue payload.",
     "For failed issues, set status to failed and explain why in two sentences.",
     "",
     `Fix PR ${ctx.pr}.`,
     "",
-    "Issue batch:",
+    "Issue payload:",
     JSON.stringify(issuePayload, null, 2),
     "",
     "PR review.md:",
