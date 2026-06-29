@@ -346,6 +346,12 @@ async function runSingleIssueFix(input: {
     };
   }
 
+  const movedHeadOutcome = await failIfFixerMovedHead(input);
+
+  if (movedHeadOutcome) {
+    return movedHeadOutcome;
+  }
+
   const result = normalizeFixResults([attempt.issue], rawResults)[0];
 
   if (result.status === "failed") {
@@ -412,8 +418,33 @@ async function resetFailedIssue(input: {
   }
 }
 
+async function failIfFixerMovedHead(input: {
+  options: RunOrchestratorOptions;
+  exec: ExecFn;
+  ctx: ReviewContext;
+  lastSuccessfulSha: string;
+  state: ReviewState;
+}): Promise<SingleFixOutcome | undefined> {
+  const currentHead = await getHeadCommitSha(input.exec, input.ctx.repo);
+
+  if (currentHead === input.lastSuccessfulSha) {
+    return undefined;
+  }
+
+  await resetFailedIssue(input);
+
+  return {
+    status: "failed",
+    summary: fixerMovedHeadSummary(input.lastSuccessfulSha, currentHead)
+  };
+}
+
 function fixerCrashedSummary(message: string): string {
   return `The fixer failed before returning structured results. ${message}`;
+}
+
+function fixerMovedHeadSummary(expectedSha: string, actualSha: string): string {
+  return `The fixer moved HEAD from ${expectedSha} to ${actualSha} before returning. mendr reset the worktree so unrecorded fixer commits are not pushed.`;
 }
 
 function noDiffSummary(): string {

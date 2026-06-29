@@ -26,6 +26,7 @@ type FixResult = {
   sha?: string;
   commitMessage?: string;
   omitCommitMessage?: boolean;
+  createUnrecordedCommit?: boolean;
   summary: string;
 };
 
@@ -325,7 +326,8 @@ class ScriptedAgentDriver {
 
   constructor(
     private readonly reviews: Array<Issue[] | Error>,
-    private readonly fixes: Array<FixResult | FixResult[] | Error> = []
+    private readonly fixes: Array<FixResult | FixResult[] | Error> = [],
+    private readonly exec?: ScriptedExec
   ) {}
 
   async review(ctx: ReviewContext): Promise<Issue[]> {
@@ -356,7 +358,13 @@ class ScriptedAgentDriver {
       return [];
     }
 
-    return issues.map((issue, index) => {
+    const mappedResults: Array<FixResult & {
+      title: string;
+      fingerprint: string;
+      status: "fixed" | "failed";
+    }> = [];
+
+    for (const [index, issue] of issues.entries()) {
       const defaultResult = {
         summary:
           "Fixed the changed range calculation. Added coverage for the boundary case."
@@ -369,15 +377,21 @@ class ScriptedAgentDriver {
         ? undefined
         : scripted.commitMessage ?? defaultCommitMessageForIssue(issue);
 
-      return {
+      if (scripted.createUnrecordedCommit && scripted.status !== "failed") {
+        await this.exec?.run("git", ["commit", "-m", "fixer-owned"], { cwd: ctx.repo });
+      }
+
+      mappedResults.push({
         title: issue.title,
         fingerprint: issueFingerprint(issue),
         status: scripted.status ?? "fixed",
         sha: scripted.status === "failed" ? undefined : hasExplicitSha ? scripted.sha : "abc1234",
         commitMessage: scripted.status === "failed" ? undefined : commitMessage,
         summary: scripted.summary
-      };
-    });
+      });
+    }
+
+    return mappedResults;
   }
 }
 
@@ -1116,6 +1130,50 @@ describe("orchestrator edge and failure handling", () => {
     expect(callInput(commitCall!)).not.toContain(issueFingerprint(rangeIssue));
     expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
     expect(reportMarkdown).toContain("Updated the parser boundary handling");
+  });
+
+  it("resets and fails a fix when the fixer creates an unrecorded commit", async () => {
+    const home = await makeHome();
+    const id = "fixer-created-commit-94c1";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({ shas: ["base0000", "fixer111", "parent222"] });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          createUnrecordedCommit: true,
+          summary:
+            "Fixed the range calculation after creating a local commit. Left an extra file edit for mendr to commit."
+        }
+      ],
+      exec
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const fixRecords = (await readFile(join(reviewDir, "fixes.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { status: string; commitSha?: string });
+    const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+    const parentCommitCall = findCall(exec.calls, "git", ["commit", "-F", "-"]);
+    const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
+
+    expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
+    expect(reportMarkdown).toContain("- Resolved by: (failed)");
+    expect(reportMarkdown).toMatch(/moved HEAD from base0000 to fixer111/i);
+    expect(fixRecords[0]).toEqual(expect.objectContaining({ status: "failed" }));
+    expect(fixRecords[0]).not.toHaveProperty("commitSha");
+    expect(state.issuesFixed).toBe(0);
+    expect(parentCommitCall).toBeUndefined();
+    expect(resetCall?.args).toEqual(["reset", "--hard", "base0000"]);
+    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
   });
 
   it("retries a rejected push once and completes when the retry succeeds", async () => {
