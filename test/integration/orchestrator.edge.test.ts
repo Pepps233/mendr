@@ -293,7 +293,7 @@ class ScriptedExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "clean" && args[1] === "-fd") {
+    if (command === "git" && args[0] === "clean" && args[1] === "-fdx") {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
@@ -738,6 +738,7 @@ describe("orchestrator edge and failure handling", () => {
       .map((line) => JSON.parse(line) as { issueIndex: number; status: string; commitSha?: string });
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
     const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
+    const cleanCall = findCall(exec.calls, "git", ["clean"]);
 
     expect(reportMarkdown).toContain("- Resolved by: first111");
     expect(reportMarkdown).toContain("Could not safely fix the stale state issue");
@@ -749,6 +750,7 @@ describe("orchestrator edge and failure handling", () => {
     );
     expect(fixRecords[1]).not.toHaveProperty("commitSha");
     expect(resetCall?.args).toEqual(["reset", "--hard", "first111"]);
+    expect(cleanCall?.args).toEqual(["clean", "-fdx"]);
     expect(state.issuesFixed).toBe(1);
     expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
       "push",

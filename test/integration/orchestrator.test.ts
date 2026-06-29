@@ -221,7 +221,7 @@ class FakeExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "clean" && args[1] === "-fd") {
+    if (command === "git" && args[0] === "clean" && args[1] === "-fdx") {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 

@@ -79,7 +79,7 @@ export async function resetWorktreeToCommit(
   sha: string
 ): Promise<void> {
   await execOk(exec, "git", ["reset", "--hard", sha], { cwd: repo });
-  await execOk(exec, "git", ["clean", "-fd"], { cwd: repo });
+  await execOk(exec, "git", ["clean", "-fdx"], { cwd: repo });
 }
 
 export async function pushHeadToBranch(
