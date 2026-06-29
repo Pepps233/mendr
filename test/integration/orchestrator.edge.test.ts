@@ -22,6 +22,8 @@ type ReviewContext = {
 };
 
 type FixResult = {
+  status?: "fixed" | "failed";
+  sha?: string;
   summary: string;
 };
 
@@ -54,6 +56,15 @@ const staleStateIssue: Issue = {
   severity: "medium",
   description: "The view command can render a stale status after a write failure."
 };
+
+function issueFingerprint(issue: Issue): string {
+  return [
+    issue.title.trim().replace(/\s+/g, " ").toLowerCase(),
+    issue.file.trim().replace(/\s+/g, " ").toLowerCase(),
+    String(issue.line),
+    issue.description.trim().replace(/\s+/g, " ").toLowerCase()
+  ].join("|");
+}
 
 async function makeHome() {
   const root = await mkdtemp(join(tmpdir(), "mendr-orchestrator-edge-"));
@@ -197,6 +208,10 @@ class ScriptedExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
+    if (command === "git" && args[0] === "rev-parse" && args[1] === "--verify") {
+      return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
       const value = this.options.shas?.[this.shaIndex] ?? "abc1234";
       this.shaIndex += 1;
@@ -237,7 +252,7 @@ class ScriptedExec {
 class ScriptedAgentDriver {
   readonly reviewContexts: ReviewContext[] = [];
 
-  readonly fixContexts: Array<{ issue: Issue; ctx: ReviewContext }> = [];
+  readonly fixContexts: Array<{ issues: Issue[]; ctx: ReviewContext }> = [];
 
   private reviewIndex = 0;
 
@@ -245,7 +260,7 @@ class ScriptedAgentDriver {
 
   constructor(
     private readonly reviews: Array<Issue[] | Error>,
-    private readonly fixes: Array<FixResult | Error> = []
+    private readonly fixes: Array<FixResult | FixResult[] | Error> = []
   ) {}
 
   async review(ctx: ReviewContext): Promise<Issue[]> {
@@ -260,20 +275,34 @@ class ScriptedAgentDriver {
     return result;
   }
 
-  async fix(issue: Issue, ctx: ReviewContext): Promise<FixResult> {
-    this.fixContexts.push({ issue, ctx });
-    const result =
-      this.fixes[Math.min(this.fixIndex, this.fixes.length - 1)] ?? {
-        summary:
-          "Fixed the changed range calculation. Added coverage for the boundary case."
-      };
+  async fix(
+    issues: Issue[],
+    ctx: ReviewContext
+  ): Promise<Array<FixResult & { title: string; fingerprint: string; status: "fixed" | "failed" }>> {
+    this.fixContexts.push({ issues, ctx });
+    const result = this.fixes[Math.min(this.fixIndex, this.fixes.length - 1)];
     this.fixIndex += 1;
 
     if (result instanceof Error) {
       throw result;
     }
 
-    return result;
+    return issues.map((issue, index) => {
+      const scripted = Array.isArray(result)
+        ? result[index]
+        : result ?? {
+            summary:
+              "Fixed the changed range calculation. Added coverage for the boundary case."
+          };
+
+      return {
+        title: issue.title,
+        fingerprint: issueFingerprint(issue),
+        status: scripted.status ?? "fixed",
+        sha: scripted.status === "failed" ? undefined : scripted.sha ?? "abc1234",
+        summary: scripted.summary
+      };
+    });
   }
 }
 
@@ -332,7 +361,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(driver.reviewContexts[0].diff).toBe("");
     expect(driver.fixContexts).toHaveLength(0);
     expect(reportMarkdown.match(/^## Summary$/gm)).toHaveLength(1);
-    expect(reportMarkdown).toMatch(/no issues found/i);
+    expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
     expect(events.map((event) => event.status)).toEqual([
       "Discovering bugs",
@@ -373,11 +402,12 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "late-review-crash-8df0";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ shas: ["fixed111"] });
+    const exec = new ScriptedExec();
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], new AgentParseFailure("Second review emitted malformed JSON")],
       [
         {
+          sha: "fixed111",
           summary:
             "Fixed the range calculation. Added coverage for the boundary condition."
         }
@@ -405,19 +435,26 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
   });
 
-  it("marks failed fixes unresolved and still attempts the remaining issues", async () => {
+  it("records mixed per-issue results from one fixer batch", async () => {
     const home = await makeHome();
     const id = "partial-fix-fail-1b76";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ shas: ["ok2222"] });
+    const exec = new ScriptedExec();
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, staleStateIssue], []],
       [
-        new Error("fix agent exited non-zero"),
-        {
-          summary:
-            "Fixed stale state rendering. Added coverage for file-backed status reads."
-        }
+        [
+          {
+            status: "failed",
+            summary:
+              "The fixer reported that this issue failed with exit code one. Manual follow-up is required."
+          },
+          {
+            sha: "ok2222",
+            summary:
+              "Fixed stale state rendering. Added coverage for file-backed status reads."
+          }
+        ]
       ]
     );
 
@@ -434,13 +471,14 @@ describe("orchestrator edge and failure handling", () => {
     );
     const events = await readEvents(reviewDir);
 
-    expect(driver.fixContexts.map(({ issue }) => issue.title)).toEqual([
+    expect(driver.fixContexts).toHaveLength(1);
+    expect(driver.fixContexts[0].issues.map((issue) => issue.title)).toEqual([
       "Prevent off-by-one diff ranges",
       "Refresh stale state reads"
     ]);
     expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
     expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toContain("fix agent exited non-zero");
+    expect(reportMarkdown).toContain("exit code one");
     expect(reportMarkdown).toContain("- Issue: Refresh stale state reads");
     expect(reportMarkdown).toContain("- Resolved by: ok2222");
     expect(state).toMatchObject({ issuesFound: 2, issuesFixed: 1 });
@@ -449,17 +487,18 @@ describe("orchestrator edge and failure handling", () => {
     );
   });
 
-  it("records unresolved work and skips push when no commit SHA can be captured", async () => {
+  it("records failed fixer results and skips push", async () => {
     const home = await makeHome();
     const id = "commit-fail-2c33";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ shas: [null] });
+    const exec = new ScriptedExec();
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
       [
         {
+          status: "failed",
           summary:
-            "Attempted the range fix. Git reported that no commit could be created."
+            "Attempted the range fix but git reported nothing to commit. Manual follow-up is required."
         }
       ]
     );
@@ -476,10 +515,10 @@ describe("orchestrator edge and failure handling", () => {
 
     expect(reportMarkdown).toContain("- Issue: Prevent off-by-one diff ranges");
     expect(reportMarkdown).toContain("- Resolved by: (failed)");
-    expect(reportMarkdown).toMatch(/nothing to commit|commit failed/i);
+    expect(reportMarkdown).toMatch(/nothing to commit/i);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
     expect(events.map((event) => event.status)).toEqual(
-      expect.arrayContaining(["Commit failed"])
+      expect.arrayContaining(["Fix failed"])
     );
   });
 
@@ -487,14 +526,12 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "push-fail-0ae4";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({
-      shas: ["push3333"],
-      pushFailures: 2
-    });
+    const exec = new ScriptedExec({ pushFailures: 2 });
     const driver = new ScriptedAgentDriver(
       [[rangeIssue], []],
       [
         {
+          sha: "push3333",
           summary:
             "Fixed the range calculation. Added a regression test for the final line."
         }
@@ -581,11 +618,12 @@ describe("orchestrator edge and failure handling", () => {
     const home = await makeHome();
     const id = "duplicate-issue-39bf";
     const reviewDir = await seedReview(home, id);
-    const exec = new ScriptedExec({ shas: ["dedupe444"] });
+    const exec = new ScriptedExec();
     const driver = new ScriptedAgentDriver(
       [[rangeIssue, { ...rangeIssue }], []],
       [
         {
+          sha: "dedupe444",
           summary:
             "Fixed the range calculation once. Added coverage for repeated issue fingerprints."
         }

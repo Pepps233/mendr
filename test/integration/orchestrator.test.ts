@@ -22,6 +22,8 @@ type ReviewContext = {
 };
 
 type FixResult = {
+  status?: "fixed" | "failed";
+  sha?: string;
   summary: string;
 };
 
@@ -46,6 +48,15 @@ const rangeIssue: Issue = {
   severity: "high",
   description: "The changed range excludes the final modified line."
 };
+
+function issueFingerprint(issue: Issue): string {
+  return [
+    issue.title.trim().replace(/\s+/g, " ").toLowerCase(),
+    issue.file.trim().replace(/\s+/g, " ").toLowerCase(),
+    String(issue.line),
+    issue.description.trim().replace(/\s+/g, " ").toLowerCase()
+  ].join("|");
+}
 
 async function makeHome() {
   const root = await mkdtemp(join(tmpdir(), "mendr-orchestrator-"));
@@ -112,6 +123,13 @@ class FakeExec {
 
   constructor(private readonly shas: string[] = ["abc1234"]) {}
 
+  nextSha(): string {
+    const sha = this.shas[Math.min(this.shaIndex, this.shas.length - 1)];
+    this.shaIndex += 1;
+
+    return sha;
+  }
+
   run = async (
     command: string,
     args: string[],
@@ -153,11 +171,12 @@ class FakeExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
-    if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
-      const sha = this.shas[Math.min(this.shaIndex, this.shas.length - 1)];
-      this.shaIndex += 1;
+    if (command === "git" && args[0] === "rev-parse" && args[1] === "--verify") {
+      return { stdout: args[2]?.replace(/\^\{commit\}$/, "") ?? "", stderr: "", exitCode: 0 };
+    }
 
-      return { stdout: sha, stderr: "", exitCode: 0 };
+    if (command === "git" && args[0] === "push") {
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "claude") {
@@ -171,7 +190,7 @@ class FakeExec {
 class FakeAgentDriver {
   readonly reviewContexts: ReviewContext[] = [];
 
-  readonly fixContexts: Array<{ issue: Issue; ctx: ReviewContext }> = [];
+  readonly fixContexts: Array<{ issues: Issue[]; ctx: ReviewContext }> = [];
 
   readonly callLog: Array<"review" | "fix"> = [];
 
@@ -208,14 +227,17 @@ class FakeAgentDriver {
     return issues;
   }
 
-  async fix(issue: Issue, ctx: ReviewContext): Promise<FixResult> {
+  async fix(
+    issues: Issue[],
+    ctx: ReviewContext
+  ): Promise<Array<FixResult & { title: string; fingerprint: string; status: "fixed" | "failed" }>> {
     this.callLog.push("fix");
-    this.fixContexts.push({ issue, ctx });
+    this.fixContexts.push({ issues, ctx });
 
     if (this.exec) {
       await this.exec.run("claude", [
         "-p",
-        `fix ${issue.title}`,
+        `fix ${issues.map((issue) => issue.title).join(", ")}`,
         "--output-format",
         "json",
         "--add-dir",
@@ -225,14 +247,20 @@ class FakeAgentDriver {
       ]);
     }
 
-    const result =
+    const scripted =
       this.fixes[Math.min(this.fixIndex, this.fixes.length - 1)] ?? {
         summary:
           "Fixed the changed range calculation. Added coverage for the boundary case."
       };
     this.fixIndex += 1;
 
-    return result;
+    return issues.map((issue) => ({
+      title: issue.title,
+      fingerprint: issueFingerprint(issue),
+      status: scripted.status ?? "fixed",
+      sha: scripted.status === "failed" ? undefined : scripted.sha ?? this.exec?.nextSha() ?? "abc1234",
+      summary: scripted.summary
+    }));
   }
 }
 
@@ -303,10 +331,12 @@ describe("orchestrator integration", () => {
       [[rangeIssue], [rangeIssue], []],
       [
         {
+          sha: "aaa1111",
           summary:
             "Fixed the first changed range path. Added a regression test around the upper bound."
         },
         {
+          sha: "bbb2222",
           summary:
             "Closed the remaining changed range path. Added a second assertion for repeated reviews."
         }
