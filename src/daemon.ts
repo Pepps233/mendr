@@ -1,5 +1,6 @@
 import { defaultMendrHome } from "./paths.js";
 import { runOrchestrator } from "./orchestrator.js";
+import { appendEvent, readState, writeState, type ReviewState } from "./state.js";
 
 type DaemonArgs =
   | {
@@ -19,10 +20,15 @@ export async function runDaemon(argv: string[] = process.argv): Promise<void> {
     throw new Error(parsed.error);
   }
 
-  await runOrchestrator({
-    mendrHome: parsed.mendrHome,
-    reviewId: parsed.reviewId
-  });
+  try {
+    await runOrchestrator({
+      mendrHome: parsed.mendrHome,
+      reviewId: parsed.reviewId
+    });
+  } catch (error) {
+    await recordDaemonFailure(parsed.mendrHome, parsed.reviewId, error);
+    throw error;
+  }
 }
 
 function parseDaemonArgs(argv: string[]): DaemonArgs {
@@ -64,6 +70,47 @@ function parseDaemonArgs(argv: string[]): DaemonArgs {
     mendrHome,
     reviewId
   };
+}
+
+async function recordDaemonFailure(
+  mendrHome: string,
+  reviewId: string,
+  error: unknown
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  let state: ReviewState = {
+    phase: "failed",
+    currentStatus: "Daemon failed",
+    issuesFound: 0,
+    issuesFixed: 0,
+    done: false,
+    capReached: false,
+    error: message
+  };
+
+  try {
+    const existing = await readState(mendrHome, reviewId);
+
+    if (existing.phase === "failed" && existing.error) {
+      return;
+    }
+
+    state = {
+      ...existing,
+      phase: "failed",
+      currentStatus: "Daemon failed",
+      done: false,
+      error: message
+    };
+  } catch {
+    // If state cannot be read, write a minimal terminal failure record below.
+  }
+
+  await writeState(mendrHome, reviewId, state);
+  await appendEvent(mendrHome, reviewId, {
+    status: "Daemon failed",
+    detail: message
+  });
 }
 
 if (process.argv[1] && process.argv[1].endsWith("daemon.js")) {
