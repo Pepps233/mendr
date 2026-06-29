@@ -361,7 +361,7 @@ export async function closeReview(options: CloseReviewOptions): Promise<void> {
   ]);
 
   if (meta.worktreePath) {
-    if (state.phase !== "complete" && state.phase !== "stopped") {
+    if (state.phase !== "complete" && state.phase !== "stopped" && state.phase !== "failed") {
       throw new Error("Stop the review or wait for it to complete before closing this session.");
     }
 

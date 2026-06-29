@@ -446,6 +446,43 @@ describe("CLI edge and failure handling", () => {
     ).toBeUndefined();
   });
 
+  it("closes a failed worktree-backed session", async () => {
+    const home = await makeHome();
+    const exec = new FakePreflightExec();
+
+    await startReview(
+      makeStartOptions({
+        mendrHome: home,
+        exec: exec.run
+      })
+    );
+    await writeFile(
+      join(home, "reviews", "1", "state.json"),
+      JSON.stringify(
+        {
+          phase: "failed",
+          currentStatus: "Daemon failed",
+          issuesFound: 0,
+          issuesFixed: 0,
+          done: true,
+          capReached: false,
+          error: "orchestrator crashed"
+        },
+        null,
+        2
+      )
+    );
+
+    await closeReview({ mendrHome: home, reviewId: "1", exec: exec.run });
+
+    await expect(listReviewDirs(home)).resolves.toEqual([]);
+    expect(
+      exec.calls.find(
+        (call) => call.command === "git" && call.args[0] === "worktree" && call.args[1] === "remove"
+      )?.args
+    ).toEqual(["worktree", "remove", "--force", join(home, "worktrees", "session-1-pr-42")]);
+  });
+
   it("allocates integer ids and resets after all sessions are closed", async () => {
     const home = await makeHome();
     const exec = new FakePreflightExec();
