@@ -1,5 +1,5 @@
 {
-  "name": "mendr",
+  "name": "@pepps233/mendr",
   "version": "0.1.0",
   "description": "Autonomous pull request review agent CLI.",
   "type": "module",
@@ -9,6 +9,9 @@
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsup src/cli.ts src/daemon.ts --format esm --dts --clean --external react",
     "coverage": "vitest run --coverage",

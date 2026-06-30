@@ -77,7 +77,7 @@ It does not require API keys, collect credentials, or manage model provider secr
 ## Installation
 
 ```sh
-npm install -g mendr
+npm install -g @pepps233/mendr
 ```
 
 After installation, run:
