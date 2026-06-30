@@ -286,6 +286,11 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
     );
     state = validationResult.state;
 
+    if (validationResult.failure) {
+      report = appendValidationFailureNote(report, validationResult.failure);
+      await writeFile(reportPath, report, "utf8");
+    }
+
     state = await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
 
     if (validationResult.failure) {
@@ -531,6 +536,13 @@ function fixerMovedHeadSummary(expectedSha: string, actualSha: string): string {
 
 function noDiffSummary(): string {
   return "The fixer reported this issue as fixed, but did not leave any file changes to commit. Manual follow-up is required to determine whether the issue still needs a code change.";
+}
+
+function appendValidationFailureNote(
+  report: string,
+  failure: SummaryValidationFailure
+): string {
+  return appendFailureNote(report, `${failure.status}: ${errorToMessage(failure.error)}`);
 }
 
 function validateCommitMessage(message: string | undefined): CommitMessageValidation {

@@ -1541,7 +1541,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.error).toMatch(/non-fast-forward|push/i);
   });
 
-  it("posts the final summary before failing when the branch has merge conflicts", async () => {
+  it("marks and posts the final summary before failing when the branch has merge conflicts", async () => {
     const home = await makeHome();
     const id = "merge-conflict-9f21";
     const reviewDir = await seedReview(home, id);
@@ -1589,11 +1589,14 @@ describe("orchestrator edge and failure handling", () => {
       exec.calls.indexOf(commentCall!)
     );
     expect(reportMarkdown).toContain("**Commit:** merge111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: Merge conflict check failed: .*merge-tree.*CONFLICT/i
+    );
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
   });
 
-  it("posts the final summary before failing when CI checks fail", async () => {
+  it("marks and posts the final summary before failing when CI checks fail", async () => {
     const home = await makeHome();
     const id = "ci-fail-51bc";
     const reviewDir = await seedReview(home, id);
@@ -1642,6 +1645,9 @@ describe("orchestrator edge and failure handling", () => {
       exec.calls.indexOf(findCall(exec.calls, "gh", ["pr", "checks", "42"])!)
     ).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** ci1111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: CI failed: .*gh pr checks 42.*required check failed/i
+    );
     expect(state.currentStatus).toMatch(/ci failed/i);
     expect(state.error).toMatch(/required check|checks/i);
   });
@@ -1694,6 +1700,9 @@ describe("orchestrator edge and failure handling", () => {
     expect(commentCall).toBeDefined();
     expect(exec.calls.indexOf(mergeCalls[1]!)).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** baseci111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: Merge conflict check failed: .*merge-tree.*CONFLICT/i
+    );
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
   });
