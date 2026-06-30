@@ -81,6 +81,16 @@ type SingleFixOutcome = {
   sha?: string;
 };
 
+type SummaryValidationFailure = {
+  status: string;
+  error: unknown;
+};
+
+type SummaryValidationResult = {
+  state: ReviewState;
+  failure?: SummaryValidationFailure;
+};
+
 type CommitMessageValidation =
   | {
       valid: true;
@@ -267,15 +277,25 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       });
     }
 
-    state = await validatePullRequestReadyForSummary(
+    const validationResult = await validatePullRequestReadyForSummary(
       options,
       exec,
       sessionRepo,
       meta.pr,
       state
     );
+    state = validationResult.state;
 
-    await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
+    state = await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
+
+    if (validationResult.failure) {
+      await fail(
+        options,
+        state,
+        validationResult.failure.status,
+        validationResult.failure.error
+      );
+    }
 
     await updateStatus(options, state, {
       phase: "complete",
@@ -708,7 +728,7 @@ async function postReportWithRetry(
   pr: string,
   reportPath: string,
   state: ReviewState
-): Promise<void> {
+): Promise<ReviewState> {
   const postingState = await updateStatus(options, state, {
     phase: "posting",
     currentStatus: "Posting review"
@@ -727,6 +747,8 @@ async function postReportWithRetry(
       await fail(options, postingState, "Posting review failed", error);
     }
   }
+
+  return postingState;
 }
 
 async function validatePullRequestReadyForSummary(
@@ -735,7 +757,7 @@ async function validatePullRequestReadyForSummary(
   repo: string,
   pr: string,
   state: ReviewState
-): Promise<ReviewState> {
+): Promise<SummaryValidationResult> {
   const validationState = await updateStatus(options, state, {
     phase: "validating",
     currentStatus: "Validating PR"
@@ -754,13 +776,19 @@ async function validatePullRequestReadyForSummary(
       })
     ).headSha;
   } catch (error) {
-    await failMergeabilityValidation(options, validationState, error);
+    return mergeabilityValidationResult(options, validationState, error);
   }
 
   try {
     await waitForPullRequestChecks(exec, repo, pr);
   } catch (error) {
-    await fail(options, validationState, "CI failed", error);
+    return {
+      state: validationState,
+      failure: {
+        status: "CI failed",
+        error
+      }
+    };
   }
 
   try {
@@ -768,10 +796,12 @@ async function validatePullRequestReadyForSummary(
       expectedHeadSha
     });
   } catch (error) {
-    await failMergeabilityValidation(options, validationState, error);
+    return mergeabilityValidationResult(options, validationState, error);
   }
 
-  return validationState;
+  return {
+    state: validationState
+  };
 }
 
 async function validateCurrentPullRequestMergeability(
@@ -836,16 +866,22 @@ async function waitForPullRequestHeadToMatchLocal(
   );
 }
 
-async function failMergeabilityValidation(
+async function mergeabilityValidationResult(
   options: RunOrchestratorOptions,
   state: ReviewState,
   error: unknown
-): Promise<never> {
+): Promise<SummaryValidationResult> {
   if (error instanceof PullRequestHeadChangedError) {
-    return fail(options, state, "PR head changed", error);
+    await fail(options, state, "PR head changed", error);
   }
 
-  return fail(options, state, "Merge conflict check failed", error);
+  return {
+    state,
+    failure: {
+      status: "Merge conflict check failed",
+      error
+    }
+  };
 }
 
 function assertPullRequestHeadMatchesLocal(localHeadSha: string, prHeadSha: string): void {

@@ -1541,7 +1541,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.error).toMatch(/non-fast-forward|push/i);
   });
 
-  it("fails before posting the final summary when the branch has merge conflicts", async () => {
+  it("posts the final summary before failing when the branch has merge conflicts", async () => {
     const home = await makeHome();
     const id = "merge-conflict-9f21";
     const reviewDir = await seedReview(home, id);
@@ -1582,13 +1582,18 @@ describe("orchestrator edge and failure handling", () => {
       "HEAD"
     ]);
     expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])).toBeUndefined();
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(exec.calls.indexOf(findCall(exec.calls, "git", ["merge-tree"])!)).toBeLessThan(
+      exec.calls.indexOf(commentCall!)
+    );
     expect(reportMarkdown).toContain("**Commit:** merge111");
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
   });
 
-  it("fails before posting the final summary when CI checks fail", async () => {
+  it("posts the final summary before failing when CI checks fail", async () => {
     const home = await makeHome();
     const id = "ci-fail-51bc";
     const reviewDir = await seedReview(home, id);
@@ -1630,7 +1635,12 @@ describe("orchestrator edge and failure handling", () => {
       "--interval",
       "10"
     ]);
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(
+      exec.calls.indexOf(findCall(exec.calls, "gh", ["pr", "checks", "42"])!)
+    ).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** ci1111");
     expect(state.currentStatus).toMatch(/ci failed/i);
     expect(state.error).toMatch(/required check|checks/i);
@@ -1679,7 +1689,10 @@ describe("orchestrator edge and failure handling", () => {
     expect(exec.calls.indexOf(fetchBaseCalls[1]!)).toBeLessThan(
       exec.calls.indexOf(mergeCalls[1]!)
     );
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(exec.calls.indexOf(mergeCalls[1]!)).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** baseci111");
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
