@@ -1541,7 +1541,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.error).toMatch(/non-fast-forward|push/i);
   });
 
-  it("fails before posting the final summary when the branch has merge conflicts", async () => {
+  it("marks and posts the final summary before failing when the branch has merge conflicts", async () => {
     const home = await makeHome();
     const id = "merge-conflict-9f21";
     const reviewDir = await seedReview(home, id);
@@ -1582,13 +1582,21 @@ describe("orchestrator edge and failure handling", () => {
       "HEAD"
     ]);
     expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])).toBeUndefined();
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(exec.calls.indexOf(findCall(exec.calls, "git", ["merge-tree"])!)).toBeLessThan(
+      exec.calls.indexOf(commentCall!)
+    );
     expect(reportMarkdown).toContain("**Commit:** merge111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: Merge conflict check failed: .*merge-tree.*CONFLICT/i
+    );
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
   });
 
-  it("fails before posting the final summary when CI checks fail", async () => {
+  it("marks and posts the final summary before failing when CI checks fail", async () => {
     const home = await makeHome();
     const id = "ci-fail-51bc";
     const reviewDir = await seedReview(home, id);
@@ -1630,8 +1638,16 @@ describe("orchestrator edge and failure handling", () => {
       "--interval",
       "10"
     ]);
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(
+      exec.calls.indexOf(findCall(exec.calls, "gh", ["pr", "checks", "42"])!)
+    ).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** ci1111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: CI failed: .*gh pr checks 42.*required check failed/i
+    );
     expect(state.currentStatus).toMatch(/ci failed/i);
     expect(state.error).toMatch(/required check|checks/i);
   });
@@ -1679,8 +1695,14 @@ describe("orchestrator edge and failure handling", () => {
     expect(exec.calls.indexOf(fetchBaseCalls[1]!)).toBeLessThan(
       exec.calls.indexOf(mergeCalls[1]!)
     );
-    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    const commentCall = findCall(exec.calls, "gh", ["pr", "comment", "42"]);
+
+    expect(commentCall).toBeDefined();
+    expect(exec.calls.indexOf(mergeCalls[1]!)).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(reportMarkdown).toContain("**Commit:** baseci111");
+    expect(reportMarkdown).toMatch(
+      /- Failure: Merge conflict check failed: .*merge-tree.*CONFLICT/i
+    );
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
   });
@@ -1782,6 +1804,50 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.currentStatus).toMatch(/pr head changed/i);
     expect(state.error).toMatch(/head1111/);
     expect(state.error).toMatch(/head2222/);
+  });
+
+  it("waits for GitHub to report the pushed PR head before waiting for checks", async () => {
+    const home = await makeHome();
+    const id = "stale-pr-head-after-push-8ac1";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      headRefOids: ["base0000", "fresh777"],
+      shas: ["base0000", "fresh777"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ done: boolean; currentStatus: string; error?: string }>(
+      join(reviewDir, "state.json")
+    );
+    const prHeadReads = findCalls(exec.calls, "gh", ["pr", "view", "42"]).filter((call) =>
+      call.args.includes("baseRefName,headRefOid")
+    );
+    const checksCall = findCall(exec.calls, "gh", ["pr", "checks", "42"]);
+
+    expect(prHeadReads).toHaveLength(3);
+    expect(exec.calls.indexOf(prHeadReads[1]!)).toBeLessThan(
+      exec.calls.indexOf(checksCall!)
+    );
+    expect(reportMarkdown).toContain("**Commit:** fresh777");
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+    expect(state).toMatchObject({ done: true, currentStatus: "Complete" });
+    expect(state.error).toBeUndefined();
   });
 
   it("retries a failed PR comment once and preserves the report for manual posting", async () => {

@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   allowedEffortsForAgent,
@@ -80,6 +81,16 @@ type SingleFixOutcome = {
   sha?: string;
 };
 
+type SummaryValidationFailure = {
+  status: string;
+  error: unknown;
+};
+
+type SummaryValidationResult = {
+  state: ReviewState;
+  failure?: SummaryValidationFailure;
+};
+
 type CommitMessageValidation =
   | {
       valid: true;
@@ -96,6 +107,14 @@ class PullRequestHeadChangedError extends Error {
     this.name = "PullRequestHeadChangedError";
   }
 }
+
+const PR_HEAD_PROPAGATION_TIMEOUT_MS = 30_000;
+const PR_HEAD_PROPAGATION_POLL_MS = 2_000;
+
+type ValidatePullRequestMergeabilityOptions = {
+  expectedHeadSha?: string;
+  waitForLocalHead?: boolean;
+};
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
@@ -258,15 +277,30 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       });
     }
 
-    state = await validatePullRequestReadyForSummary(
+    const validationResult = await validatePullRequestReadyForSummary(
       options,
       exec,
       sessionRepo,
       meta.pr,
       state
     );
+    state = validationResult.state;
 
-    await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
+    if (validationResult.failure) {
+      report = appendValidationFailureNote(report, validationResult.failure);
+      await writeFile(reportPath, report, "utf8");
+    }
+
+    state = await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
+
+    if (validationResult.failure) {
+      await fail(
+        options,
+        state,
+        validationResult.failure.status,
+        validationResult.failure.error
+      );
+    }
 
     await updateStatus(options, state, {
       phase: "complete",
@@ -504,6 +538,13 @@ function noDiffSummary(): string {
   return "The fixer reported this issue as fixed, but did not leave any file changes to commit. Manual follow-up is required to determine whether the issue still needs a code change.";
 }
 
+function appendValidationFailureNote(
+  report: string,
+  failure: SummaryValidationFailure
+): string {
+  return appendFailureNote(report, `${failure.status}: ${errorToMessage(failure.error)}`);
+}
+
 function validateCommitMessage(message: string | undefined): CommitMessageValidation {
   const normalized = message?.replace(/\r\n?/g, "\n").trim();
 
@@ -699,7 +740,7 @@ async function postReportWithRetry(
   pr: string,
   reportPath: string,
   state: ReviewState
-): Promise<void> {
+): Promise<ReviewState> {
   const postingState = await updateStatus(options, state, {
     phase: "posting",
     currentStatus: "Posting review"
@@ -718,6 +759,8 @@ async function postReportWithRetry(
       await fail(options, postingState, "Posting review failed", error);
     }
   }
+
+  return postingState;
 }
 
 async function validatePullRequestReadyForSummary(
@@ -726,7 +769,7 @@ async function validatePullRequestReadyForSummary(
   repo: string,
   pr: string,
   state: ReviewState
-): Promise<ReviewState> {
+): Promise<SummaryValidationResult> {
   const validationState = await updateStatus(options, state, {
     phase: "validating",
     currentStatus: "Validating PR"
@@ -740,38 +783,52 @@ async function validatePullRequestReadyForSummary(
 
   try {
     expectedHeadSha = (
-      await validateCurrentPullRequestMergeability(exec, repo, pr)
+      await validateCurrentPullRequestMergeability(exec, repo, pr, {
+        waitForLocalHead: true
+      })
     ).headSha;
   } catch (error) {
-    await failMergeabilityValidation(options, validationState, error);
+    return mergeabilityValidationResult(options, validationState, error);
   }
 
   try {
     await waitForPullRequestChecks(exec, repo, pr);
   } catch (error) {
-    await fail(options, validationState, "CI failed", error);
+    return {
+      state: validationState,
+      failure: {
+        status: "CI failed",
+        error
+      }
+    };
   }
 
   try {
-    await validateCurrentPullRequestMergeability(exec, repo, pr, expectedHeadSha);
+    await validateCurrentPullRequestMergeability(exec, repo, pr, {
+      expectedHeadSha
+    });
   } catch (error) {
-    await failMergeabilityValidation(options, validationState, error);
+    return mergeabilityValidationResult(options, validationState, error);
   }
 
-  return validationState;
+  return {
+    state: validationState
+  };
 }
 
 async function validateCurrentPullRequestMergeability(
   exec: ExecFn,
   repo: string,
   pr: string,
-  expectedHeadSha?: string
+  options: ValidatePullRequestMergeabilityOptions = {}
 ): Promise<PullRequestReadinessRefs> {
-  const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
   const localHeadSha = await getHeadCommitSha(exec, repo);
+  const readinessRefs = options.waitForLocalHead
+    ? await waitForPullRequestHeadToMatchLocal(exec, repo, pr, localHeadSha)
+    : await fetchPullRequestReadinessRefs(exec, repo, pr);
 
-  if (expectedHeadSha !== undefined) {
-    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
+  if (options.expectedHeadSha !== undefined) {
+    assertPullRequestHeadUnchanged(options.expectedHeadSha, readinessRefs.headSha);
   }
 
   assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
@@ -783,16 +840,60 @@ async function validateCurrentPullRequestMergeability(
   return readinessRefs;
 }
 
-async function failMergeabilityValidation(
+async function waitForPullRequestHeadToMatchLocal(
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  localHeadSha: string
+): Promise<PullRequestReadinessRefs> {
+  const deadline = Date.now() + PR_HEAD_PROPAGATION_TIMEOUT_MS;
+  let attempt = 0;
+  let lastObservedHeadSha = "";
+
+  while (Date.now() <= deadline) {
+    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+    lastObservedHeadSha = readinessRefs.headSha;
+
+    if (readinessRefs.headSha === localHeadSha) {
+      return readinessRefs;
+    }
+
+    const remainingMs = deadline - Date.now();
+
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    const waitMs =
+      attempt === 0 ? 0 : Math.min(PR_HEAD_PROPAGATION_POLL_MS, remainingMs);
+    attempt += 1;
+
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Local session HEAD ${localHeadSha} does not match current PR head ${lastObservedHeadSha} after waiting for GitHub to report the pushed head. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
+}
+
+async function mergeabilityValidationResult(
   options: RunOrchestratorOptions,
   state: ReviewState,
   error: unknown
-): Promise<never> {
+): Promise<SummaryValidationResult> {
   if (error instanceof PullRequestHeadChangedError) {
-    return fail(options, state, "PR head changed", error);
+    await fail(options, state, "PR head changed", error);
   }
 
-  return fail(options, state, "Merge conflict check failed", error);
+  return {
+    state,
+    failure: {
+      status: "Merge conflict check failed",
+      error
+    }
+  };
 }
 
 function assertPullRequestHeadMatchesLocal(localHeadSha: string, prHeadSha: string): void {

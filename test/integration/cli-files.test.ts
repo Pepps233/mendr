@@ -265,4 +265,43 @@ describe("CLI file-backed integration", () => {
     expect(doneSnapshot.frame).toContain("Complete");
     expect(doneSnapshot.frame).toMatch(/2\s+fixed/i);
   });
+
+  it("renders failed reviews as terminal even when done is false", async () => {
+    const home = await makeHome();
+    const id = "failed-pr-head-1a2b";
+    const reviewDir = await seedReview(
+      home,
+      id,
+      { agent: "codex", pr: "42" },
+      {
+        phase: "failed",
+        currentStatus: "PR head changed",
+        issuesFound: 2,
+        issuesFixed: 2,
+        done: false,
+        capReached: false
+      }
+    );
+    await appendEvents(reviewDir, [
+      {
+        status: "PR head changed",
+        detail: "Local session HEAD head2222 does not match current PR head head1111.",
+        ts: "2026-06-28T17:00:04.000Z"
+      }
+    ]);
+
+    const failedSnapshot = await renderReviewViewSnapshot({
+      mendrHome: home,
+      reviewId: id
+    });
+
+    expect(failedSnapshot).toMatchObject({
+      reviewId: "1",
+      phase: "failed",
+      done: false,
+      currentStatus: "PR head changed"
+    });
+    expect(failedSnapshot.frame).toContain("PR head changed");
+    expect(failedSnapshot.spinner).toBe("");
+  });
 });

@@ -31,6 +31,12 @@ export type ReviewState = {
   error?: string;
 };
 
+const terminalReviewPhases = new Set(["complete", "stopped", "failed"]);
+
+export function isTerminalReviewState(state: Pick<ReviewState, "phase" | "done">): boolean {
+  return state.done || terminalReviewPhases.has(state.phase);
+}
+
 export type ReviewEventInput = {
   status: string;
   detail: string;
