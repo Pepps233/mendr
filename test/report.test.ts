@@ -109,6 +109,36 @@ describe("report markdown helpers", () => {
     expect(report).toContain("The fixer exited before returning structured results.");
   });
 
+  it("does not add unresolved entries for already resolved issues", () => {
+    const resolved = appendResolvedIssue("", baseEntry);
+    const unresolved = appendUnresolvedIssue(resolved, {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+
+    expect(unresolved).toBe(resolved);
+    expect(unresolved).not.toContain("### Unresolved Issues");
+    expect(unresolved).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("does not double-write the same unresolved issue", () => {
+    const once = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const twice = appendUnresolvedIssue(once, {
+      issue: baseIssue,
+      summary:
+        "The fixer reported the same unresolved issue again. Manual follow-up is required."
+    });
+
+    expect(twice).toBe(once);
+    expect(twice.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(twice).not.toContain("The fixer reported the same unresolved issue again.");
+  });
+
   it("removes stale unresolved entries when the same issue is later resolved", () => {
     const unresolved = appendUnresolvedIssue("", {
       issue: baseIssue,
@@ -120,6 +150,37 @@ describe("report markdown helpers", () => {
     expect(resolved).toContain("### Resolved Issues");
     expect(resolved).toContain("**Commit:** abc1234");
     expect(resolved).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("removes stale unresolved sections while preserving later sections", () => {
+    const unresolved = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const capped = appendRoundCapNote(unresolved, {
+      maxRounds: 1,
+      openIssues: [baseIssue]
+    });
+    const resolved = appendResolvedIssue(capped, baseEntry);
+
+    expect(resolved).not.toContain("### Unresolved Issues");
+    expect(resolved).toContain("### Round Cap");
+    expect(resolved).toContain("Reached after 1 round with 1 open issue:");
+  });
+
+  it("clears stale unresolved entries when the issue was already recorded as resolved", () => {
+    const resolved = appendResolvedIssue("", baseEntry);
+    const staleReport = appendUnresolvedIssue(resolved.replace("src/range.ts", "src/old-range.ts"), {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const cleaned = appendResolvedIssue(staleReport, baseEntry);
+
+    expect(cleaned).not.toContain("### Unresolved Issues");
+    expect(cleaned.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(cleaned).not.toContain("The fixer exited before returning structured results.");
   });
 
   it("keeps distinct unresolved entries that share the same title", () => {

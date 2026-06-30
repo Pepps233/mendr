@@ -231,10 +231,6 @@ function removeEmptySection(report: string, sectionHeading: string): string {
   const lines = report.split("\n");
   const sectionIndex = lines.findIndex((line) => line === sectionHeading);
 
-  if (sectionIndex === -1) {
-    return report;
-  }
-
   const nextSectionIndex = lines.findIndex(
     (line, index) => index > sectionIndex && isSectionHeading(line)
   );
