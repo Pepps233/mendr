@@ -235,7 +235,7 @@ async function assertReviewCompleted(
     expect(result.events.map((event) => event.status)).toContain("Resolving issues");
     expect(result.report).toContain("### Resolved Issues");
     expect(result.report).toMatch(/^#### .+/m);
-    expect(result.report).toMatch(/\*\*Commit:\*\* `[0-9a-f]{7,40}`/);
+    expect(result.report).toMatch(/\*\*Commit:\*\* [0-9a-f]{7,40}/);
     expect(result.report).toMatch(/^[^\n]+\.\s+[^\n]+\.$/m);
 
     await run("git", ["fetch", "origin", result.branch], {

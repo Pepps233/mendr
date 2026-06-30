@@ -62,7 +62,7 @@ describe("report markdown helpers", () => {
       "## Summary by Mendr",
       "### Resolved Issues",
       "#### Prevent off-by-one diff ranges",
-      "**Commit:** `abc1234`",
+      "**Commit:** abc1234",
       "Added an inclusive upper-bound check for changed ranges. Covered the boundary case with a regression test."
     ]);
   });
@@ -93,7 +93,7 @@ describe("report markdown helpers", () => {
     expect(report).toContain("- Issue: Already fixed");
     expect(report).toContain("### Resolved Issues");
     expect(report).toContain("#### Prevent off-by-one diff ranges");
-    expect(report).toContain("**Commit:** `abc1234`");
+    expect(report).toContain("**Commit:** abc1234");
   });
 
   it("renders open issues when the round cap is reached", () => {

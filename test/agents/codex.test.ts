@@ -42,7 +42,7 @@ const reviewContext = {
   effort: "xhigh" as const,
   diff: "diff --git a/src/orchestrator.ts b/src/orchestrator.ts",
   reviewMarkdown: "# PR 42\n\nBody text.",
-  reportMarkdown: "## Summary by Mendr\n\n### Resolved Issues\n\n#### Already fixed\n**Commit:** `abc1234`"
+  reportMarkdown: "## Summary by Mendr\n\n### Resolved Issues\n\n#### Already fixed\n**Commit:** abc1234"
 };
 
 describe("Codex agent driver", () => {

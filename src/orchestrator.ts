@@ -20,6 +20,8 @@ import {
 import { defaultExec, type ExecFn } from "./exec.js";
 import {
   commitStaged,
+  ensureMergeableWithRef,
+  fetchRemoteBranch,
   getHeadCommitSha,
   getPorcelainStatus,
   pushHeadToBranch,
@@ -27,10 +29,12 @@ import {
   stageAll
 } from "./git.js";
 import {
+  fetchPullRequestBaseBranch,
   fetchPullRequestDetails,
   fetchPullRequestDiff,
   postPullRequestComment,
-  renderReviewMarkdown
+  renderReviewMarkdown,
+  waitForPullRequestChecks
 } from "./github.js";
 import {
   appendFailureNote,
@@ -244,6 +248,14 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         capReached: false
       });
     }
+
+    state = await validatePullRequestReadyForSummary(
+      options,
+      exec,
+      sessionRepo,
+      meta.pr,
+      state
+    );
 
     await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
 
@@ -690,6 +702,40 @@ async function postReportWithRetry(
       await fail(options, postingState, "Posting review failed", error);
     }
   }
+}
+
+async function validatePullRequestReadyForSummary(
+  options: RunOrchestratorOptions,
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  state: ReviewState
+): Promise<ReviewState> {
+  const validationState = await updateStatus(options, state, {
+    phase: "validating",
+    currentStatus: "Validating PR"
+  });
+  await appendEvent(options.mendrHome, options.reviewId, {
+    status: "Validating PR",
+    detail: "checking merge conflicts and CI"
+  });
+
+  try {
+    const baseBranch = await fetchPullRequestBaseBranch(exec, repo, pr);
+    const baseRef = await fetchRemoteBranch(exec, repo, "origin", baseBranch);
+
+    await ensureMergeableWithRef(exec, repo, baseRef);
+  } catch (error) {
+    await fail(options, validationState, "Merge conflict check failed", error);
+  }
+
+  try {
+    await waitForPullRequestChecks(exec, repo, pr);
+  } catch (error) {
+    await fail(options, validationState, "CI failed", error);
+  }
+
+  return validationState;
 }
 
 async function persistIssueRecords(

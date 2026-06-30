@@ -56,6 +56,31 @@ export async function getPorcelainStatus(exec: ExecFn, repo: string): Promise<st
   return result.stdout.trim();
 }
 
+export async function fetchRemoteBranch(
+  exec: ExecFn,
+  repo: string,
+  remote: string,
+  branch: string
+): Promise<string> {
+  const remoteRef = `refs/remotes/${remote}/${branch}`;
+
+  await execOk(exec, "git", ["fetch", remote, `+refs/heads/${branch}:${remoteRef}`], {
+    cwd: repo
+  });
+
+  return remoteRef;
+}
+
+export async function ensureMergeableWithRef(
+  exec: ExecFn,
+  repo: string,
+  baseRef: string
+): Promise<void> {
+  await execOk(exec, "git", ["merge-tree", "--write-tree", "--quiet", baseRef, "HEAD"], {
+    cwd: repo
+  });
+}
+
 export async function stageAll(exec: ExecFn, repo: string): Promise<void> {
   await execOk(exec, "git", ["add", "-A"], { cwd: repo });
 }

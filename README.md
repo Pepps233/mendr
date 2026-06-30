@@ -97,7 +97,7 @@ The report starts with exactly one Mendr summary heading and groups resolved iss
 ### Resolved Issues
 
 #### <issue found by review agent>
-**Commit:** `<commit sha>`
+**Commit:** <commit sha>
 <two sentences on how it was fixed>
 
 ### Round Cap

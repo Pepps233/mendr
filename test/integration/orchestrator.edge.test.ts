@@ -185,7 +185,9 @@ class ScriptedExec {
       commitFailures?: number;
       emptyRevList?: boolean;
       invalidVerifyShas?: string[];
+      mergeConflict?: boolean;
       pushFailures?: number;
+      checksFailure?: boolean;
       commentFailures?: number;
     } = {}
   ) {
@@ -215,6 +217,7 @@ class ScriptedExec {
               body: "Please make sure empty comments do not break the review."
             }
           ],
+          baseRefName: "main",
           ...this.options.prView
         }),
         stderr: "",
@@ -251,8 +254,36 @@ class ScriptedExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
+    if (command === "gh" && args[0] === "pr" && args[1] === "checks") {
+      if (this.options.checksFailure) {
+        return {
+          stdout: "",
+          stderr: "required check failed",
+          exitCode: 1
+        };
+      }
+
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
       return { stdout: this.currentHead, stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "fetch") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "merge-tree") {
+      if (this.options.mergeConflict) {
+        return {
+          stdout: "CONFLICT (content): Merge conflict in src/range.ts",
+          stderr: "",
+          exitCode: 1
+        };
+      }
+
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "git" && args[0] === "status" && args[1] === "--porcelain") {
@@ -532,6 +563,7 @@ describe("orchestrator edge and failure handling", () => {
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
     expect(events.map((event) => event.status)).toEqual([
       "Discovering bugs",
+      "Validating PR",
       "Posting review",
       "Complete"
     ]);
@@ -596,7 +628,7 @@ describe("orchestrator edge and failure handling", () => {
     );
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `fixed111`");
+    expect(reportMarkdown).toContain("**Commit:** fixed111");
     expect(state.currentStatus).toMatch(/review failed/i);
     expect(state.error).toContain("Second review emitted malformed JSON");
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
@@ -643,10 +675,10 @@ describe("orchestrator edge and failure handling", () => {
       "Refresh stale state reads"
     ]);
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toContain("exit code one");
     expect(reportMarkdown).toContain("#### Refresh stale state reads");
-    expect(reportMarkdown).toContain("**Commit:** `ok2222`");
+    expect(reportMarkdown).toContain("**Commit:** ok2222");
     expect(state).toMatchObject({ issuesFound: 2, issuesFixed: 1 });
     expect(events.map((event) => event.status)).toEqual(
       expect.arrayContaining(["Fix failed", "Complete"])
@@ -689,9 +721,9 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `range111`");
+    expect(reportMarkdown).toContain("**Commit:** range111");
     expect(reportMarkdown).toContain("#### Refresh stale state reads");
-    expect(reportMarkdown).toContain("**Commit:** `state222`");
+    expect(reportMarkdown).toContain("**Commit:** state222");
     expect(fixRecords).toEqual([
       expect.objectContaining({ issueIndex: 1, commitSha: "range111" }),
       expect.objectContaining({ issueIndex: 2, commitSha: "state222" })
@@ -740,7 +772,7 @@ describe("orchestrator edge and failure handling", () => {
     const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
     const cleanCall = findCall(exec.calls, "git", ["clean"]);
 
-    expect(reportMarkdown).toContain("**Commit:** `first111`");
+    expect(reportMarkdown).toContain("**Commit:** first111");
     expect(reportMarkdown).toContain("Could not safely fix the stale state issue");
     expect(fixRecords[0]).toEqual(
       expect.objectContaining({ issueIndex: 1, status: "fixed", commitSha: "first111" })
@@ -788,7 +820,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `valid111`");
+    expect(reportMarkdown).toContain("**Commit:** valid111");
     expect(state.issuesFixed).toBe(1);
     expect(findCall(exec.calls, "git", ["push"])?.args).toEqual([
       "push",
@@ -827,7 +859,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `valid111`");
+    expect(reportMarkdown).toContain("**Commit:** valid111");
     expect(state.issuesFixed).toBe(1);
     expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
@@ -859,7 +891,7 @@ describe("orchestrator edge and failure handling", () => {
     const events = await readEvents(reviewDir);
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toMatch(/nothing to commit/i);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
     expect(events.map((event) => event.status)).toEqual(
@@ -891,7 +923,7 @@ describe("orchestrator edge and failure handling", () => {
     const events = await readEvents(reviewDir);
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toContain("fix agent exited with code 1");
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
@@ -928,7 +960,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toMatch(/file changes to commit/i);
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
@@ -961,7 +993,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toMatch(/did not provide a commit message/i);
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
@@ -1020,7 +1052,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toContain("did not return a result");
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
@@ -1055,7 +1087,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `missing555`");
+    expect(reportMarkdown).toContain("**Commit:** missing555");
     expect(state.issuesFixed).toBe(1);
     expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
@@ -1090,7 +1122,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `empty666`");
+    expect(reportMarkdown).toContain("**Commit:** empty666");
     expect(state.issuesFixed).toBe(1);
     expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
@@ -1168,7 +1200,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toMatch(/commit message/i);
     expect(state.issuesFixed).toBe(0);
     expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
@@ -1294,7 +1326,7 @@ describe("orchestrator edge and failure handling", () => {
       const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
       expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-      expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+      expect(reportMarkdown).toContain("**Commit:** (failed)");
       expect(reportMarkdown).toMatch(testCase.reason);
       expect(state.issuesFixed).toBe(0);
       expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
@@ -1336,7 +1368,7 @@ describe("orchestrator edge and failure handling", () => {
     const resetCall = findCall(exec.calls, "git", ["reset", "--hard"]);
 
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `(failed)`");
+    expect(reportMarkdown).toContain("**Commit:** (failed)");
     expect(reportMarkdown).toMatch(/moved HEAD from base0000 to fixer111/i);
     expect(fixRecords[0]).toEqual(expect.objectContaining({ status: "failed" }));
     expect(fixRecords[0]).not.toHaveProperty("commitSha");
@@ -1373,7 +1405,7 @@ describe("orchestrator edge and failure handling", () => {
     const state = await readJson<{ done: boolean; error?: string }>(join(reviewDir, "state.json"));
 
     expect(findCalls(exec.calls, "git", ["push"])).toHaveLength(2);
-    expect(reportMarkdown).toContain("**Commit:** `retry777`");
+    expect(reportMarkdown).toContain("**Commit:** retry777");
     expect(reportMarkdown).not.toMatch(/push failed/i);
     expect(state).toMatchObject({ done: true });
     expect(state.error).toBeUndefined();
@@ -1411,10 +1443,105 @@ describe("orchestrator edge and failure handling", () => {
 
     expect(findCalls(exec.calls, "git", ["push"])).toHaveLength(2);
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `push3333`");
+    expect(reportMarkdown).toContain("**Commit:** push3333");
     expect(reportMarkdown).toMatch(/push failed|non-fast-forward/i);
     expect(state.currentStatus).toMatch(/push failed/i);
     expect(state.error).toMatch(/non-fast-forward|push/i);
+  });
+
+  it("fails before posting the final summary when the branch has merge conflicts", async () => {
+    const home = await makeHome();
+    const id = "merge-conflict-9f21";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      mergeConflict: true,
+      shas: ["base0000", "merge111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/merge-tree|conflict/i);
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
+    expect(findCall(exec.calls, "git", ["merge-tree"])?.args).toEqual([
+      "merge-tree",
+      "--write-tree",
+      "--quiet",
+      "refs/remotes/origin/main",
+      "HEAD"
+    ]);
+    expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])).toBeUndefined();
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    expect(reportMarkdown).toContain("**Commit:** merge111");
+    expect(state.currentStatus).toMatch(/merge conflict check failed/i);
+    expect(state.error).toMatch(/conflict|merge-tree/i);
+  });
+
+  it("fails before posting the final summary when CI checks fail", async () => {
+    const home = await makeHome();
+    const id = "ci-fail-51bc";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      checksFailure: true,
+      shas: ["base0000", "ci1111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/checks|required check/i);
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(findCall(exec.calls, "git", ["merge-tree"])).toBeDefined();
+    expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])?.args).toEqual([
+      "pr",
+      "checks",
+      "42",
+      "--watch",
+      "--fail-fast",
+      "--interval",
+      "10"
+    ]);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    expect(reportMarkdown).toContain("**Commit:** ci1111");
+    expect(state.currentStatus).toMatch(/ci failed/i);
+    expect(state.error).toMatch(/required check|checks/i);
   });
 
   it("retries a failed PR comment once and preserves the report for manual posting", async () => {
@@ -1521,7 +1648,7 @@ describe("orchestrator edge and failure handling", () => {
 
     expect(driver.fixContexts).toHaveLength(1);
     expect(reportMarkdown.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
-    expect(reportMarkdown).toContain("**Commit:** `dedupe444`");
+    expect(reportMarkdown).toContain("**Commit:** dedupe444");
   });
 
   it("records startup failures that happen before PR fetching begins", async () => {

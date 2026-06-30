@@ -21,7 +21,7 @@ const ROUND_CAP_HEADING = "### Round Cap";
 export function appendResolvedIssue(report: string, entry: ResolvedIssueEntry): string {
   let normalized = ensureSummary(report);
   const issueLine = `#### ${entry.issue.title}`;
-  const shaLine = `**Commit:** \`${entry.sha}\``;
+  const shaLine = `**Commit:** ${entry.sha}`;
   const legacyIssueLine = `- Issue: ${entry.issue.title}`;
   const legacyShaLine = `- Resolved by: ${entry.sha}`;
 
