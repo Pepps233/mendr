@@ -40,7 +40,8 @@ import {
   appendFailureNote,
   appendIssueResult,
   appendNoIssuesFound,
-  appendRoundCapNote
+  appendRoundCapNote,
+  appendUnresolvedIssue
 } from "./report.js";
 import { reviewDir } from "./paths.js";
 import {
@@ -313,13 +314,20 @@ async function runFixRound(input: {
       lastSuccessfulSha,
       state
     });
-    const sha = outcome.status === "fixed" && outcome.sha ? outcome.sha : "(failed)";
 
-    report = appendIssueResult(report, {
-      issue: attempt.issue,
-      sha,
-      summary: outcome.summary
-    });
+    if (outcome.status === "fixed" && outcome.sha) {
+      report = appendIssueResult(report, {
+        issue: attempt.issue,
+        sha: outcome.sha,
+        summary: outcome.summary
+      });
+    } else {
+      report = appendUnresolvedIssue(report, {
+        issue: attempt.issue,
+        summary: outcome.summary
+      });
+    }
+
     await appendFixAttempt(input.options.mendrHome, input.options.reviewId, {
       sessionId: input.options.reviewId,
       round: attempt.round,
@@ -603,7 +611,7 @@ function forbiddenCommitMessageReason(message: string): string | undefined {
 function parseCommitSubject(
   line: string
 ): { type: string; scope: string; summary: string } | undefined {
-  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([a-z][^\n]*)$/.exec(line);
+  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([A-Za-z][^\n]*)$/.exec(line);
 
   if (!match) {
     return undefined;

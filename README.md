@@ -89,7 +89,7 @@ mendr --help
 ## Report Format
 
 The final pull request comment is generated from `report.md`.
-The report starts with exactly one Mendr summary heading and groups resolved issues under a dedicated section.
+The report starts with exactly one Mendr summary heading and groups resolved and unresolved issues under dedicated sections.
 
 ```md
 ## Summary by Mendr
@@ -99,6 +99,11 @@ The report starts with exactly one Mendr summary heading and groups resolved iss
 #### <issue found by review agent>
 **Commit:** <commit sha>
 <two sentences on how it was fixed>
+
+### Unresolved Issues
+
+#### <issue requiring follow-up>
+<why Mendr could not safely record a fix>
 
 ### Round Cap
 

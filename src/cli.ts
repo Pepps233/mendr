@@ -524,8 +524,8 @@ export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
     snapshot.capReached
       ? React.createElement(Text, { color: "yellow" }, "Round cap reached")
       : null,
-    ...snapshot.recentEvents.map((event) =>
-      React.createElement(Text, { key: event, dimColor: true }, event)
+    ...snapshot.recentEvents.map((event, index) =>
+      React.createElement(Text, { key: `${index}:${event}`, dimColor: true }, event)
     )
   );
 }

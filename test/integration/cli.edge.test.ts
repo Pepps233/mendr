@@ -200,6 +200,52 @@ async function expectLiveViewExitOnInput(inputChunk: string): Promise<void> {
   }
 }
 
+async function expectLiveViewAcceptsDuplicateEventText(): Promise<void> {
+  const stdin = makeTtyInput();
+  const stdout = makeTtyOutput();
+  const stderr = makeTtyOutput();
+  const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  const duplicateEvent =
+    "Fix failed: The fixer reported this issue as fixed, but its commit message is invalid.";
+  const app = render(
+    React.createElement(ReviewView, {
+      reviewId: "1",
+      pollIntervalMs: 60_000,
+      loadSnapshot: async () => ({
+        reviewId: "1",
+        agent: "codex",
+        pr: "42",
+        phase: "complete",
+        currentStatus: "Complete",
+        issuesFound: 2,
+        issuesFixed: 1,
+        done: true,
+        capReached: true,
+        recentEvents: [duplicateEvent, duplicateEvent],
+        frame: "",
+        spinner: ""
+      })
+    }),
+    {
+      stdin,
+      stdout,
+      stderr
+    }
+  );
+
+  try {
+    await withTimeout(app.waitUntilExit(), 500);
+    const duplicateKeyWarning = consoleError.mock.calls.some((call) =>
+      call.some((part) => String(part).includes("Encountered two children with the same key"))
+    );
+
+    expect(duplicateKeyWarning).toBe(false);
+  } finally {
+    consoleError.mockRestore();
+    app.unmount();
+  }
+}
+
 class FakePreflightExec {
   readonly calls: ExecCall[] = [];
 
@@ -333,6 +379,10 @@ describe("CLI edge and failure handling", () => {
   it("exits the live view when q or escape is pressed", async () => {
     await expectLiveViewExitOnInput("q");
     await expectLiveViewExitOnInput("\u001B");
+  });
+
+  it("renders duplicate event text without key collisions", async () => {
+    await expectLiveViewAcceptsDuplicateEventText();
   });
 
   it.each([

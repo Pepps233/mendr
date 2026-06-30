@@ -4,7 +4,8 @@ import {
   appendFailureNote,
   appendNoIssuesFound,
   appendResolvedIssue,
-  appendRoundCapNote
+  appendRoundCapNote,
+  appendUnresolvedIssue
 } from "../src/report.js";
 
 const baseIssue = {
@@ -74,6 +75,50 @@ describe("report markdown helpers", () => {
     expect(twice).toBe(once);
     expect(twice.match(/Prevent off-by-one diff ranges/g)).toHaveLength(1);
     expect(twice.match(/abc1234/g)).toHaveLength(1);
+  });
+
+  it("does not double-write older backticked commit entries", () => {
+    const existing = [
+      "## Summary by Mendr",
+      "",
+      "### Resolved Issues",
+      "",
+      "#### Prevent off-by-one diff ranges",
+      "**Commit:** `abc1234`",
+      "Added the previous fix. Preserved historical report context.",
+      ""
+    ].join("\n");
+    const report = appendResolvedIssue(existing, baseEntry);
+
+    expect(report).toBe(existing);
+    expect(report.match(/Prevent off-by-one diff ranges/g)).toHaveLength(1);
+    expect(report.match(/abc1234/g)).toHaveLength(1);
+  });
+
+  it("renders unresolved issues without a failed commit placeholder", () => {
+    const report = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+
+    expect(report).toContain("### Unresolved Issues");
+    expect(report).toContain("#### Prevent off-by-one diff ranges");
+    expect(report).not.toContain("**Commit:** (failed)");
+    expect(report).toContain("The fixer exited before returning structured results.");
+  });
+
+  it("removes stale unresolved entries when the same issue is later resolved", () => {
+    const unresolved = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const resolved = appendResolvedIssue(unresolved, baseEntry);
+
+    expect(resolved).toContain("### Resolved Issues");
+    expect(resolved).toContain("**Commit:** abc1234");
+    expect(resolved).not.toContain("The fixer exited before returning structured results.");
   });
 
   it("upgrades legacy Summary reports before appending new issue sections", () => {
