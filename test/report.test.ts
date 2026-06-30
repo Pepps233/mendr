@@ -4,7 +4,8 @@ import {
   appendFailureNote,
   appendNoIssuesFound,
   appendResolvedIssue,
-  appendRoundCapNote
+  appendRoundCapNote,
+  appendUnresolvedIssue
 } from "../src/report.js";
 
 const baseIssue = {
@@ -62,7 +63,8 @@ describe("report markdown helpers", () => {
       "## Summary by Mendr",
       "### Resolved Issues",
       "#### Prevent off-by-one diff ranges",
-      "**Commit:** `abc1234`",
+      expect.stringMatching(/^<!-- mendr-issue-fingerprint: [A-Za-z0-9_-]+ -->$/),
+      "**Commit:** abc1234",
       "Added an inclusive upper-bound check for changed ranges. Covered the boundary case with a regression test."
     ]);
   });
@@ -74,6 +76,165 @@ describe("report markdown helpers", () => {
     expect(twice).toBe(once);
     expect(twice.match(/Prevent off-by-one diff ranges/g)).toHaveLength(1);
     expect(twice.match(/abc1234/g)).toHaveLength(1);
+  });
+
+  it("does not double-write older backticked commit entries", () => {
+    const existing = [
+      "## Summary by Mendr",
+      "",
+      "### Resolved Issues",
+      "",
+      "#### Prevent off-by-one diff ranges",
+      "**Commit:** `abc1234`",
+      "Added the previous fix. Preserved historical report context.",
+      ""
+    ].join("\n");
+    const report = appendResolvedIssue(existing, baseEntry);
+
+    expect(report).toBe(existing);
+    expect(report.match(/Prevent off-by-one diff ranges/g)).toHaveLength(1);
+    expect(report.match(/abc1234/g)).toHaveLength(1);
+  });
+
+  it("renders unresolved issues without a failed commit placeholder", () => {
+    const report = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+
+    expect(report).toContain("### Unresolved Issues");
+    expect(report).toContain("#### Prevent off-by-one diff ranges");
+    expect(report).not.toContain("**Commit:** (failed)");
+    expect(report).toContain("The fixer exited before returning structured results.");
+  });
+
+  it("does not add unresolved entries for already resolved issues", () => {
+    const resolved = appendResolvedIssue("", baseEntry);
+    const unresolved = appendUnresolvedIssue(resolved, {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+
+    expect(unresolved).toBe(resolved);
+    expect(unresolved).not.toContain("### Unresolved Issues");
+    expect(unresolved).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("does not double-write the same unresolved issue", () => {
+    const once = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const twice = appendUnresolvedIssue(once, {
+      issue: baseIssue,
+      summary:
+        "The fixer reported the same unresolved issue again. Manual follow-up is required."
+    });
+
+    expect(twice).toBe(once);
+    expect(twice.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(twice).not.toContain("The fixer reported the same unresolved issue again.");
+  });
+
+  it("removes stale unresolved entries when the same issue is later resolved", () => {
+    const unresolved = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const resolved = appendResolvedIssue(unresolved, baseEntry);
+
+    expect(resolved).toContain("### Resolved Issues");
+    expect(resolved).toContain("**Commit:** abc1234");
+    expect(resolved).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("removes stale unresolved sections while preserving later sections", () => {
+    const unresolved = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const capped = appendRoundCapNote(unresolved, {
+      maxRounds: 1,
+      openIssues: [baseIssue]
+    });
+    const resolved = appendResolvedIssue(capped, baseEntry);
+
+    expect(resolved).not.toContain("### Unresolved Issues");
+    expect(resolved).toContain("### Round Cap");
+    expect(resolved).toContain("Reached after 1 round with 1 open issue:");
+  });
+
+  it("clears stale unresolved entries when the issue was already recorded as resolved", () => {
+    const resolved = appendResolvedIssue("", baseEntry);
+    const staleReport = appendUnresolvedIssue(resolved.replace("src/range.ts", "src/old-range.ts"), {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const cleaned = appendResolvedIssue(staleReport, baseEntry);
+
+    expect(cleaned).not.toContain("### Unresolved Issues");
+    expect(cleaned.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
+    expect(cleaned).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("keeps distinct unresolved entries that share the same title", () => {
+    const sameTitleIssue = {
+      ...baseIssue,
+      file: "src/github.ts",
+      line: 17,
+      description: "The parser skips the final review comment."
+    };
+    const first = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const second = appendUnresolvedIssue(first, {
+      issue: sameTitleIssue,
+      summary:
+        "The fixer left the review parser unchanged. Manual follow-up is required."
+    });
+
+    expect(second.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(2);
+    expect(second).toContain("The fixer exited before returning structured results.");
+    expect(second).toContain("The fixer left the review parser unchanged.");
+  });
+
+  it("removes only the matching unresolved entry when same-title issues are resolved", () => {
+    const sameTitleIssue = {
+      ...baseIssue,
+      file: "src/github.ts",
+      line: 17,
+      description: "The parser skips the final review comment."
+    };
+    const unresolved = appendUnresolvedIssue(
+      appendUnresolvedIssue("", {
+        issue: baseIssue,
+        summary:
+          "The fixer exited before returning structured results. Manual follow-up is required."
+      }),
+      {
+        issue: sameTitleIssue,
+        summary:
+          "The fixer left the review parser unchanged. Manual follow-up is required."
+      }
+    );
+    const resolved = appendResolvedIssue(unresolved, {
+      ...baseEntry,
+      issue: sameTitleIssue,
+      sha: "def5678"
+    });
+
+    expect(resolved).toContain("### Resolved Issues");
+    expect(resolved).toContain("**Commit:** def5678");
+    expect(resolved).toContain("The fixer exited before returning structured results.");
+    expect(resolved).not.toContain("The fixer left the review parser unchanged.");
   });
 
   it("upgrades legacy Summary reports before appending new issue sections", () => {
@@ -93,7 +254,7 @@ describe("report markdown helpers", () => {
     expect(report).toContain("- Issue: Already fixed");
     expect(report).toContain("### Resolved Issues");
     expect(report).toContain("#### Prevent off-by-one diff ranges");
-    expect(report).toContain("**Commit:** `abc1234`");
+    expect(report).toContain("**Commit:** abc1234");
   });
 
   it("renders open issues when the round cap is reached", () => {

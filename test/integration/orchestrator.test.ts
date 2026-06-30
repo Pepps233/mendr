@@ -186,7 +186,9 @@ class FakeExec {
               author: { login: "reviewer" },
               body: "Please make sure empty comments do not break the review."
             }
-          ]
+          ],
+          baseRefName: "main",
+          headRefOid: this.currentHead
         }),
         stderr: "",
         exitCode: 0
@@ -210,8 +212,20 @@ class FakeExec {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
+    if (command === "gh" && args[0] === "pr" && args[1] === "checks") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
       return { stdout: this.currentHead, stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "fetch") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "merge-tree") {
+      return { stdout: "", stderr: "", exitCode: 0 };
     }
 
     if (command === "git" && args[0] === "status" && args[1] === "--porcelain") {
@@ -393,7 +407,8 @@ describe("orchestrator integration", () => {
     expect(reportMarkdown.match(/^## Summary by Mendr$/gm)).toHaveLength(1);
     expect(reportMarkdown).toContain("### Resolved Issues");
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("**Commit:** `abc1234`");
+    expect(reportMarkdown).toContain("**Commit:** abc1234");
+    expect(events.map((event) => event.status)).toContain("Validating PR");
     expect(JSON.parse(issuesJsonl.trim())).toMatchObject({
       sessionId: id,
       round: 1,
@@ -424,6 +439,33 @@ describe("orchestrator integration", () => {
       "origin",
       "HEAD:feature/range-fix"
     ]);
+    const fetchBaseCall = findCall(exec.calls, "git", ["fetch", "origin"]);
+    const mergeCall = findCall(exec.calls, "git", ["merge-tree"]);
+    const checksCall = findCall(exec.calls, "gh", ["pr", "checks", "42"]);
+
+    expect(fetchBaseCall?.args).toEqual([
+      "fetch",
+      "origin",
+      "+refs/heads/main:refs/remotes/origin/main"
+    ]);
+    expect(mergeCall?.args).toEqual([
+      "merge-tree",
+      "--write-tree",
+      "--quiet",
+      "refs/remotes/origin/main",
+      "HEAD"
+    ]);
+    expect(checksCall?.args).toEqual([
+      "pr",
+      "checks",
+      "42",
+      "--watch",
+      "--fail-fast",
+      "--interval",
+      "10"
+    ]);
+    expect(exec.calls.indexOf(mergeCall!)).toBeLessThan(exec.calls.indexOf(checksCall!));
+    expect(exec.calls.indexOf(checksCall!)).toBeLessThan(exec.calls.indexOf(commentCall!));
     expect(commentCall?.args).toEqual(
       expect.arrayContaining(["--body-file", join(reviewDir, "report.md")])
     );
@@ -432,6 +474,7 @@ describe("orchestrator integration", () => {
       "Discovering bugs",
       "Resolving issues",
       "Discovering bugs",
+      "Validating PR",
       "Posting review",
       "Complete"
     ]);
@@ -513,7 +556,7 @@ describe("orchestrator integration", () => {
       const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
       expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-      expect(reportMarkdown).toContain("**Commit:** `first111`");
+      expect(reportMarkdown).toContain("**Commit:** first111");
       expect(reportMarkdown).not.toContain("#### Persist fixed issue progress");
       expect(state.issuesFixed).toBe(1);
       expect(fixContexts).toHaveLength(2);
@@ -532,7 +575,7 @@ describe("orchestrator integration", () => {
     const finalReportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const finalState = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
 
-    expect(finalReportMarkdown).toContain("**Commit:** `second222`");
+    expect(finalReportMarkdown).toContain("**Commit:** second222");
     expect(finalState.issuesFixed).toBe(2);
   });
 
@@ -630,7 +673,7 @@ describe("orchestrator integration", () => {
     expect(driver.reviewContexts[1].reportMarkdown).toContain("aaa1111");
     expect(driver.reviewContexts[2].reportMarkdown).toContain("aaa1111");
     expect(reportMarkdown.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(1);
-    expect(reportMarkdown).toContain("**Commit:** `aaa1111`");
+    expect(reportMarkdown).toContain("**Commit:** aaa1111");
   });
 
   it("runs every review, fix, commit, push, and comment from the session worktree", async () => {

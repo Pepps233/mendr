@@ -20,6 +20,8 @@ import {
 import { defaultExec, type ExecFn } from "./exec.js";
 import {
   commitStaged,
+  ensureMergeableWithRef,
+  fetchRemoteBranch,
   getHeadCommitSha,
   getPorcelainStatus,
   pushHeadToBranch,
@@ -29,14 +31,18 @@ import {
 import {
   fetchPullRequestDetails,
   fetchPullRequestDiff,
+  fetchPullRequestReadinessRefs,
   postPullRequestComment,
-  renderReviewMarkdown
+  renderReviewMarkdown,
+  type PullRequestReadinessRefs,
+  waitForPullRequestChecks
 } from "./github.js";
 import {
   appendFailureNote,
   appendIssueResult,
   appendNoIssuesFound,
-  appendRoundCapNote
+  appendRoundCapNote,
+  appendUnresolvedIssue
 } from "./report.js";
 import { reviewDir } from "./paths.js";
 import {
@@ -83,6 +89,13 @@ type CommitMessageValidation =
       valid: false;
       reason: string;
     };
+
+class PullRequestHeadChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PullRequestHeadChangedError";
+  }
+}
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
@@ -245,6 +258,14 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       });
     }
 
+    state = await validatePullRequestReadyForSummary(
+      options,
+      exec,
+      sessionRepo,
+      meta.pr,
+      state
+    );
+
     await postReportWithRetry(options, exec, sessionRepo, meta.pr, reportPath, state);
 
     await updateStatus(options, state, {
@@ -294,13 +315,20 @@ async function runFixRound(input: {
       lastSuccessfulSha,
       state
     });
-    const sha = outcome.status === "fixed" && outcome.sha ? outcome.sha : "(failed)";
 
-    report = appendIssueResult(report, {
-      issue: attempt.issue,
-      sha,
-      summary: outcome.summary
-    });
+    if (outcome.status === "fixed" && outcome.sha) {
+      report = appendIssueResult(report, {
+        issue: attempt.issue,
+        sha: outcome.sha,
+        summary: outcome.summary
+      });
+    } else {
+      report = appendUnresolvedIssue(report, {
+        issue: attempt.issue,
+        summary: outcome.summary
+      });
+    }
+
     await appendFixAttempt(input.options.mendrHome, input.options.reviewId, {
       sessionId: input.options.reviewId,
       round: attempt.round,
@@ -584,7 +612,7 @@ function forbiddenCommitMessageReason(message: string): string | undefined {
 function parseCommitSubject(
   line: string
 ): { type: string; scope: string; summary: string } | undefined {
-  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([a-z][^\n]*)$/.exec(line);
+  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([A-Za-z][^\n]*)$/.exec(line);
 
   if (!match) {
     return undefined;
@@ -690,6 +718,101 @@ async function postReportWithRetry(
       await fail(options, postingState, "Posting review failed", error);
     }
   }
+}
+
+async function validatePullRequestReadyForSummary(
+  options: RunOrchestratorOptions,
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  state: ReviewState
+): Promise<ReviewState> {
+  const validationState = await updateStatus(options, state, {
+    phase: "validating",
+    currentStatus: "Validating PR"
+  });
+  await appendEvent(options.mendrHome, options.reviewId, {
+    status: "Validating PR",
+    detail: "checking merge conflicts and CI"
+  });
+
+  let expectedHeadSha = "";
+
+  try {
+    expectedHeadSha = (
+      await validateCurrentPullRequestMergeability(exec, repo, pr)
+    ).headSha;
+  } catch (error) {
+    await failMergeabilityValidation(options, validationState, error);
+  }
+
+  try {
+    await waitForPullRequestChecks(exec, repo, pr);
+  } catch (error) {
+    await fail(options, validationState, "CI failed", error);
+  }
+
+  try {
+    await validateCurrentPullRequestMergeability(exec, repo, pr, expectedHeadSha);
+  } catch (error) {
+    await failMergeabilityValidation(options, validationState, error);
+  }
+
+  return validationState;
+}
+
+async function validateCurrentPullRequestMergeability(
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  expectedHeadSha?: string
+): Promise<PullRequestReadinessRefs> {
+  const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+  const localHeadSha = await getHeadCommitSha(exec, repo);
+
+  if (expectedHeadSha !== undefined) {
+    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
+  }
+
+  assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
+
+  const baseRef = await fetchRemoteBranch(exec, repo, "origin", readinessRefs.baseBranch);
+
+  await ensureMergeableWithRef(exec, repo, baseRef);
+
+  return readinessRefs;
+}
+
+async function failMergeabilityValidation(
+  options: RunOrchestratorOptions,
+  state: ReviewState,
+  error: unknown
+): Promise<never> {
+  if (error instanceof PullRequestHeadChangedError) {
+    return fail(options, state, "PR head changed", error);
+  }
+
+  return fail(options, state, "Merge conflict check failed", error);
+}
+
+function assertPullRequestHeadMatchesLocal(localHeadSha: string, prHeadSha: string): void {
+  if (localHeadSha === prHeadSha) {
+    return;
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Local session HEAD ${localHeadSha} does not match current PR head ${prHeadSha}. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
+}
+
+function assertPullRequestHeadUnchanged(expectedHeadSha: string, currentHeadSha: string): void {
+  if (expectedHeadSha === currentHeadSha) {
+    return;
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Pull request head changed from ${expectedHeadSha} to ${currentHeadSha} while Mendr was validating readiness. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
 }
 
 async function persistIssueRecords(
