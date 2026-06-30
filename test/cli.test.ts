@@ -105,6 +105,32 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  it("parses session management commands", () => {
+    expect(parseCliArgs(["node", "mendr", "view", "1"])).toEqual({
+      ok: true,
+      command: "view",
+      reviewId: "1"
+    });
+    expect(parseCliArgs(["node", "mendr", "stop", "1"])).toEqual({
+      ok: true,
+      command: "stop",
+      reviewId: "1"
+    });
+    expect(parseCliArgs(["node", "mendr", "kill", "1"])).toEqual({
+      ok: true,
+      command: "kill",
+      reviewId: "1"
+    });
+  });
+
+  it("rejects the retired close command", () => {
+    expect(parseCliArgs(["node", "mendr", "close", "1"])).toEqual({
+      ok: false,
+      exitCode: 1,
+      error: "The close command has been renamed to kill."
+    });
+  });
+
   it("rejects unsupported agent names with a non-zero parse result", () => {
     expect(parseCliArgs(["node", "mendr", "gemini", "42"])).toEqual({
       ok: false,

@@ -1,10 +1,15 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+
+import { render } from "ink";
+import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   closeReview,
+  ReviewView,
   renderReviewList,
   renderReviewViewSnapshot,
   startReview,
@@ -120,6 +125,79 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 100) {
       setTimeout(() => reject(new Error("timed out waiting for file-backed view")), timeoutMs);
     })
   ]);
+}
+
+function makeTtyInput(): NodeJS.ReadStream & {
+  write: (chunk: string) => boolean;
+  setRawMode: (enabled: boolean) => NodeJS.ReadStream;
+} {
+  const input = new PassThrough() as NodeJS.ReadStream & {
+    write: (chunk: string) => boolean;
+    isTTY: boolean;
+    setRawMode: (enabled: boolean) => NodeJS.ReadStream;
+    ref: () => NodeJS.ReadStream;
+    unref: () => NodeJS.ReadStream;
+  };
+
+  input.isTTY = true;
+  input.setRawMode = () => input;
+  input.ref = () => input;
+  input.unref = () => input;
+
+  return input;
+}
+
+function makeTtyOutput(): NodeJS.WriteStream {
+  const output = new PassThrough() as NodeJS.WriteStream & {
+    columns: number;
+    rows: number;
+    isTTY: boolean;
+  };
+
+  output.columns = 80;
+  output.rows = 24;
+  output.isTTY = true;
+
+  return output;
+}
+
+async function expectLiveViewExitOnInput(inputChunk: string): Promise<void> {
+  const stdin = makeTtyInput();
+  const stdout = makeTtyOutput();
+  const stderr = makeTtyOutput();
+  const app = render(
+    React.createElement(ReviewView, {
+      reviewId: "1",
+      pollIntervalMs: 60_000,
+      loadSnapshot: async () => ({
+        reviewId: "1",
+        agent: "claude",
+        pr: "42",
+        phase: "fixing",
+        currentStatus: "Resolving issues",
+        issuesFound: 2,
+        issuesFixed: 1,
+        done: false,
+        capReached: false,
+        recentEvents: [],
+        frame: "",
+        spinner: "."
+      })
+    }),
+    {
+      stdin,
+      stdout,
+      stderr
+    }
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    stdin.write(inputChunk);
+    await withTimeout(app.waitUntilExit(), 500);
+  } finally {
+    app.unmount();
+  }
 }
 
 class FakePreflightExec {
@@ -240,6 +318,11 @@ afterEach(async () => {
 });
 
 describe("CLI edge and failure handling", () => {
+  it("exits the live view when q or escape is pressed", async () => {
+    await expectLiveViewExitOnInput("q");
+    await expectLiveViewExitOnInput("\u001B");
+  });
+
   it.each([
     { missingBinary: "gh", agent: "claude" as const, expected: /gh.*not found/i },
     { missingBinary: "git", agent: "claude" as const, expected: /git.*not found/i },
