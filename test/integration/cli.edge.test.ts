@@ -216,6 +216,7 @@ class FakePreflightExec {
       baseRepository?: {
         nameWithOwner: string;
       };
+      isCrossRepository?: boolean;
     } = {}
   ) {}
 
@@ -261,6 +262,16 @@ class FakePreflightExec {
     }
 
     if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
+
+      if (jsonFields.includes("baseRepository")) {
+        return {
+          stdout: "",
+          stderr: 'Unknown JSON field: "baseRepository"',
+          exitCode: 1
+        };
+      }
+
       return {
         stdout: JSON.stringify({
           number: 42,
@@ -272,7 +283,8 @@ class FakePreflightExec {
           },
           baseRepository: this.options.baseRepository ?? {
             nameWithOwner: "acme/mendr"
-          }
+          },
+          isCrossRepository: this.options.isCrossRepository ?? false
         }),
         stderr: "",
         exitCode: 0
@@ -403,9 +415,25 @@ describe("CLI edge and failure handling", () => {
 
     const meta = JSON.parse(
       await readFile(join(home, "reviews", "1", "meta.json"), "utf8")
-    ) as { branch?: string };
+    ) as { branch?: string; branchPushRemote?: string };
+    const prHeadCall = exec.calls.find(
+      (call) =>
+        call.command === "gh" &&
+        call.args[0] === "pr" &&
+        call.args[1] === "view" &&
+        call.args[2] === "42" &&
+        call.args.some((arg) => arg.includes("headRepository"))
+    );
 
     expect(meta.branch).toBe("feature/review");
+    expect(meta.branchPushRemote).toBe("origin");
+    expect(prHeadCall?.args).toEqual([
+      "pr",
+      "view",
+      "42",
+      "--json",
+      "headRefName,headRepository,headRepositoryOwner,isCrossRepository"
+    ]);
     expect(
       exec.calls.find((call) => call.command === "git" && call.args[0] === "fetch")?.args
     ).toEqual(["fetch", "origin", "+refs/pull/42/head:refs/mendr/pr-42/head"]);
@@ -457,7 +485,8 @@ describe("CLI edge and failure handling", () => {
       },
       baseRepository: {
         nameWithOwner: "acme/mendr"
-      }
+      },
+      isCrossRepository: true
     });
 
     await startReview(

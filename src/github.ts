@@ -61,7 +61,7 @@ export async function fetchPullRequestHeadBranch(
       "view",
       pr,
       "--json",
-      "headRefName,headRepository,baseRepository,headRepositoryOwner"
+      "headRefName,headRepository,headRepositoryOwner,isCrossRepository"
     ],
     {
       cwd: repo
@@ -72,6 +72,7 @@ export async function fetchPullRequestHeadBranch(
     headRepository?: unknown;
     baseRepository?: unknown;
     headRepositoryOwner?: unknown;
+    isCrossRepository?: unknown;
   };
   const branch = typeof parsed.headRefName === "string" ? parsed.headRefName.trim() : "";
 
@@ -138,15 +139,23 @@ function resolveBranchPushRemote(input: {
   headRepository?: unknown;
   baseRepository?: unknown;
   headRepositoryOwner?: unknown;
+  isCrossRepository?: unknown;
 }): string {
   const headRepository = readRepositoryInfo(input.headRepository, input.headRepositoryOwner);
   const baseRepository = readRepositoryInfo(input.baseRepository);
+  const isCrossRepository =
+    typeof input.isCrossRepository === "boolean" ? input.isCrossRepository : undefined;
 
   if (!headRepository) {
     throw new Error("Could not resolve the pull request head repository from GitHub.");
   }
 
+  if (isCrossRepository === false) {
+    return "origin";
+  }
+
   if (
+    isCrossRepository === undefined &&
     headRepository.nameWithOwner &&
     baseRepository?.nameWithOwner &&
     headRepository.nameWithOwner === baseRepository.nameWithOwner
