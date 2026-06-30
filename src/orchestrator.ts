@@ -29,9 +29,9 @@ import {
   stageAll
 } from "./git.js";
 import {
-  fetchPullRequestBaseBranch,
   fetchPullRequestDetails,
   fetchPullRequestDiff,
+  fetchPullRequestReadinessRefs,
   postPullRequestComment,
   renderReviewMarkdown,
   waitForPullRequestChecks
@@ -87,6 +87,13 @@ type CommitMessageValidation =
       valid: false;
       reason: string;
     };
+
+class PullRequestHeadChangedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PullRequestHeadChangedError";
+  }
+}
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
@@ -720,12 +727,23 @@ async function validatePullRequestReadyForSummary(
     detail: "checking merge conflicts and CI"
   });
 
+  let expectedHeadSha = "";
+
   try {
-    const baseBranch = await fetchPullRequestBaseBranch(exec, repo, pr);
-    const baseRef = await fetchRemoteBranch(exec, repo, "origin", baseBranch);
+    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+    const localHeadSha = await getHeadCommitSha(exec, repo);
+
+    expectedHeadSha = readinessRefs.headSha;
+    assertPullRequestHeadMatchesLocal(localHeadSha, expectedHeadSha);
+
+    const baseRef = await fetchRemoteBranch(exec, repo, "origin", readinessRefs.baseBranch);
 
     await ensureMergeableWithRef(exec, repo, baseRef);
   } catch (error) {
+    if (error instanceof PullRequestHeadChangedError) {
+      await fail(options, validationState, "PR head changed", error);
+    }
+
     await fail(options, validationState, "Merge conflict check failed", error);
   }
 
@@ -735,7 +753,41 @@ async function validatePullRequestReadyForSummary(
     await fail(options, validationState, "CI failed", error);
   }
 
+  try {
+    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+    const localHeadSha = await getHeadCommitSha(exec, repo);
+
+    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
+    assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
+  } catch (error) {
+    if (error instanceof PullRequestHeadChangedError) {
+      await fail(options, validationState, "PR head changed", error);
+    }
+
+    await fail(options, validationState, "PR readiness check failed", error);
+  }
+
   return validationState;
+}
+
+function assertPullRequestHeadMatchesLocal(localHeadSha: string, prHeadSha: string): void {
+  if (localHeadSha === prHeadSha) {
+    return;
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Local session HEAD ${localHeadSha} does not match current PR head ${prHeadSha}. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
+}
+
+function assertPullRequestHeadUnchanged(expectedHeadSha: string, currentHeadSha: string): void {
+  if (expectedHeadSha === currentHeadSha) {
+    return;
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Pull request head changed from ${expectedHeadSha} to ${currentHeadSha} while Mendr was validating readiness. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
 }
 
 async function persistIssueRecords(

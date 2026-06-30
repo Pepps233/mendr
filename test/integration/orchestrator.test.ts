@@ -187,7 +187,8 @@ class FakeExec {
               body: "Please make sure empty comments do not break the review."
             }
           ],
-          baseRefName: "main"
+          baseRefName: "main",
+          headRefOid: this.currentHead
         }),
         stderr: "",
         exitCode: 0

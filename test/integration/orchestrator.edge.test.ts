@@ -175,12 +175,15 @@ class ScriptedExec {
 
   private commentAttempts = 0;
 
+  private prHeadReadIndex = 0;
+
   constructor(
     private readonly options: {
       prView?: Record<string, unknown>;
       diff?: string;
       shas?: Array<string | Error | null>;
       headReads?: Array<string | Error | null>;
+      headRefOids?: string[];
       statusOutputs?: string[];
       commitFailures?: number;
       emptyRevList?: boolean;
@@ -207,6 +210,13 @@ class ScriptedExec {
     this.calls.push({ command, args, options });
 
     if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
+      const headRefOid = jsonFields.includes("headRefOid")
+        ? (this.options.headRefOids?.[
+            Math.min(this.prHeadReadIndex++, this.options.headRefOids.length - 1)
+          ] ?? this.currentHead)
+        : this.currentHead;
+
       return {
         stdout: JSON.stringify({
           title: "Fix changed range parsing",
@@ -218,6 +228,7 @@ class ScriptedExec {
             }
           ],
           baseRefName: "main",
+          headRefOid,
           ...this.options.prView
         }),
         stderr: "",
@@ -1542,6 +1553,47 @@ describe("orchestrator edge and failure handling", () => {
     expect(reportMarkdown).toContain("**Commit:** ci1111");
     expect(state.currentStatus).toMatch(/ci failed/i);
     expect(state.error).toMatch(/required check|checks/i);
+  });
+
+  it("fails before posting the final summary when the PR head advances during readiness checks", async () => {
+    const home = await makeHome();
+    const id = "head-advanced-2b37";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      headRefOids: ["head1111", "head2222"],
+      shas: ["base0000", "head1111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/head2222|head changed|current PR head/i);
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(findCall(exec.calls, "git", ["merge-tree"])).toBeDefined();
+    expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])).toBeDefined();
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    expect(reportMarkdown).toContain("**Commit:** head1111");
+    expect(state.currentStatus).toMatch(/pr head changed/i);
+    expect(state.error).toMatch(/head1111/);
+    expect(state.error).toMatch(/head2222/);
   });
 
   it("retries a failed PR comment once and preserves the report for manual posting", async () => {
