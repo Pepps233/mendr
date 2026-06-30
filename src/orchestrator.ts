@@ -59,6 +59,7 @@ type RoundOutcome = {
   report: string;
   fixedCount: number;
   pushed: boolean;
+  state: ReviewState;
 };
 
 type IssueAttempt = {
@@ -216,13 +217,14 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
           reportPath,
           branch: meta.branch,
           branchPushRemote: normalizeBranchPushRemote(meta.branchPushRemote),
-          state
+          state,
+          setState: (nextState) => {
+            state = nextState;
+          }
         });
 
         report = outcome.report;
-        state = await updateStatus(options, state, {
-          issuesFixed: state.issuesFixed + outcome.fixedCount
-        });
+        state = outcome.state;
       }
 
       if (round === meta.maxRounds) {
@@ -274,16 +276,23 @@ async function runFixRound(input: {
   branch: string;
   branchPushRemote: string;
   state: ReviewState;
+  setState: (state: ReviewState) => void;
 }): Promise<RoundOutcome> {
   let report = input.report;
   let fixedCount = 0;
   let lastSuccessfulSha = await getHeadCommitSha(input.exec, input.ctx.repo);
+  let state = input.state;
 
   for (const attempt of input.issues) {
     const outcome = await runSingleIssueFix({
       ...input,
+      ctx: {
+        ...input.ctx,
+        reportMarkdown: report
+      },
       attempt,
-      lastSuccessfulSha
+      lastSuccessfulSha,
+      state
     });
     const sha = outcome.status === "fixed" && outcome.sha ? outcome.sha : "(failed)";
 
@@ -302,10 +311,15 @@ async function runFixRound(input: {
       summary: outcome.summary,
       ...(outcome.sha ? { commitSha: outcome.sha } : {})
     });
+    await writeFile(input.reportPath, report, "utf8");
 
     if (outcome.status === "fixed" && outcome.sha) {
       fixedCount += 1;
       lastSuccessfulSha = outcome.sha;
+      state = await updateStatus(input.options, state, {
+        issuesFixed: state.issuesFixed + 1
+      });
+      input.setState(state);
     } else {
       await appendEvent(input.options.mendrHome, input.options.reviewId, {
         status: "Fix failed",
@@ -313,8 +327,6 @@ async function runFixRound(input: {
       });
     }
   }
-
-  await writeFile(input.reportPath, report, "utf8");
 
   if (fixedCount > 0) {
     try {
@@ -324,14 +336,15 @@ async function runFixRound(input: {
       const failedReport = appendFailureNote(report, `push failed: ${message}`);
 
       await writeFile(input.reportPath, failedReport, "utf8");
-      await fail(input.options, input.state, "Push failed", error);
+      await fail(input.options, state, "Push failed", error);
     }
   }
 
   return {
     report,
     fixedCount,
-    pushed: fixedCount > 0
+    pushed: fixedCount > 0,
+    state
   };
 }
 

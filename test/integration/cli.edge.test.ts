@@ -1,10 +1,15 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+
+import { render } from "ink";
+import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   closeReview,
+  ReviewView,
   renderReviewList,
   renderReviewViewSnapshot,
   startReview,
@@ -122,6 +127,79 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs = 100) {
   ]);
 }
 
+function makeTtyInput(): NodeJS.ReadStream & {
+  write: (chunk: string) => boolean;
+  setRawMode: (enabled: boolean) => NodeJS.ReadStream;
+} {
+  const input = new PassThrough() as NodeJS.ReadStream & {
+    write: (chunk: string) => boolean;
+    isTTY: boolean;
+    setRawMode: (enabled: boolean) => NodeJS.ReadStream;
+    ref: () => NodeJS.ReadStream;
+    unref: () => NodeJS.ReadStream;
+  };
+
+  input.isTTY = true;
+  input.setRawMode = () => input;
+  input.ref = () => input;
+  input.unref = () => input;
+
+  return input;
+}
+
+function makeTtyOutput(): NodeJS.WriteStream {
+  const output = new PassThrough() as NodeJS.WriteStream & {
+    columns: number;
+    rows: number;
+    isTTY: boolean;
+  };
+
+  output.columns = 80;
+  output.rows = 24;
+  output.isTTY = true;
+
+  return output;
+}
+
+async function expectLiveViewExitOnInput(inputChunk: string): Promise<void> {
+  const stdin = makeTtyInput();
+  const stdout = makeTtyOutput();
+  const stderr = makeTtyOutput();
+  const app = render(
+    React.createElement(ReviewView, {
+      reviewId: "1",
+      pollIntervalMs: 60_000,
+      loadSnapshot: async () => ({
+        reviewId: "1",
+        agent: "claude",
+        pr: "42",
+        phase: "fixing",
+        currentStatus: "Resolving issues",
+        issuesFound: 2,
+        issuesFixed: 1,
+        done: false,
+        capReached: false,
+        recentEvents: [],
+        frame: "",
+        spinner: "."
+      })
+    }),
+    {
+      stdin,
+      stdout,
+      stderr
+    }
+  );
+
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    stdin.write(inputChunk);
+    await withTimeout(app.waitUntilExit(), 500);
+  } finally {
+    app.unmount();
+  }
+}
+
 class FakePreflightExec {
   readonly calls: ExecCall[] = [];
 
@@ -138,6 +216,7 @@ class FakePreflightExec {
       baseRepository?: {
         nameWithOwner: string;
       };
+      isCrossRepository?: boolean;
     } = {}
   ) {}
 
@@ -183,6 +262,16 @@ class FakePreflightExec {
     }
 
     if (command === "gh" && args[0] === "pr" && args[1] === "view") {
+      const jsonFields = args[args.indexOf("--json") + 1]?.split(",") ?? [];
+
+      if (jsonFields.includes("baseRepository")) {
+        return {
+          stdout: "",
+          stderr: 'Unknown JSON field: "baseRepository"',
+          exitCode: 1
+        };
+      }
+
       return {
         stdout: JSON.stringify({
           number: 42,
@@ -194,7 +283,8 @@ class FakePreflightExec {
           },
           baseRepository: this.options.baseRepository ?? {
             nameWithOwner: "acme/mendr"
-          }
+          },
+          isCrossRepository: this.options.isCrossRepository ?? false
         }),
         stderr: "",
         exitCode: 0
@@ -240,6 +330,11 @@ afterEach(async () => {
 });
 
 describe("CLI edge and failure handling", () => {
+  it("exits the live view when q or escape is pressed", async () => {
+    await expectLiveViewExitOnInput("q");
+    await expectLiveViewExitOnInput("\u001B");
+  });
+
   it.each([
     { missingBinary: "gh", agent: "claude" as const, expected: /gh.*not found/i },
     { missingBinary: "git", agent: "claude" as const, expected: /git.*not found/i },
@@ -320,9 +415,25 @@ describe("CLI edge and failure handling", () => {
 
     const meta = JSON.parse(
       await readFile(join(home, "reviews", "1", "meta.json"), "utf8")
-    ) as { branch?: string };
+    ) as { branch?: string; branchPushRemote?: string };
+    const prHeadCall = exec.calls.find(
+      (call) =>
+        call.command === "gh" &&
+        call.args[0] === "pr" &&
+        call.args[1] === "view" &&
+        call.args[2] === "42" &&
+        call.args.some((arg) => arg.includes("headRepository"))
+    );
 
     expect(meta.branch).toBe("feature/review");
+    expect(meta.branchPushRemote).toBe("origin");
+    expect(prHeadCall?.args).toEqual([
+      "pr",
+      "view",
+      "42",
+      "--json",
+      "headRefName,headRepository,headRepositoryOwner,isCrossRepository"
+    ]);
     expect(
       exec.calls.find((call) => call.command === "git" && call.args[0] === "fetch")?.args
     ).toEqual(["fetch", "origin", "+refs/pull/42/head:refs/mendr/pr-42/head"]);
@@ -374,7 +485,8 @@ describe("CLI edge and failure handling", () => {
       },
       baseRepository: {
         nameWithOwner: "acme/mendr"
-      }
+      },
+      isCrossRepository: true
     });
 
     await startReview(

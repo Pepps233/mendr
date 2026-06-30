@@ -37,6 +37,7 @@ mendr <agent> <pr> [--rounds <n>] [--model <model>] [--effort <effort>]
 mendr ls
 mendr view <id>
 mendr stop <id>
+mendr kill <id>
 ```
 
 ![mendr](assets/mendr.gif)

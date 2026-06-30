@@ -5,7 +5,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { Command } from "commander";
-import { Box, Text, render, useApp } from "ink";
+import { Box, Text, render, useApp, useInput, useStdin } from "ink";
 import Spinner from "ink-spinner";
 import React, { useEffect, useState } from "react";
 
@@ -60,7 +60,7 @@ export type CliParseResult =
     }
   | {
       ok: true;
-      command: "view" | "close" | "stop";
+      command: "view" | "kill" | "stop";
       reviewId: string;
     }
   | {
@@ -151,7 +151,7 @@ export function parseCliArgs(argv: string[]): CliParseResult {
     };
   }
 
-  if (args[0] === "view" || args[0] === "close" || args[0] === "stop") {
+  if (args[0] === "view" || args[0] === "kill" || args[0] === "stop") {
     const reviewId = args[1];
 
     if (!reviewId) {
@@ -166,6 +166,14 @@ export function parseCliArgs(argv: string[]): CliParseResult {
       ok: true,
       command: args[0],
       reviewId
+    };
+  }
+
+  if (args[0] === "close") {
+    return {
+      ok: false,
+      exitCode: 1,
+      error: "The close command has been renamed to kill."
     };
   }
 
@@ -428,9 +436,19 @@ export async function startLiveReviewView(options: LiveReviewViewOptions): Promi
 
 export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
   const { exit } = useApp();
+  const { isRawModeSupported } = useStdin();
   const loadSnapshot = props.loadSnapshot ?? renderReviewViewSnapshot;
   const [snapshot, setSnapshot] = useState<ReviewViewSnapshot | undefined>();
   const [error, setError] = useState<string | undefined>();
+
+  useInput(
+    (input, key) => {
+      if (input.toLowerCase() === "q" || key.escape) {
+        exit();
+      }
+    },
+    { isActive: isRawModeSupported }
+  );
 
   useEffect(() => {
     let active = true;
@@ -909,6 +927,10 @@ async function main(argv: string[]): Promise<void> {
           program.help();
         }
 
+        if (agent === "close") {
+          throw new Error("The close command has been renamed to kill.");
+        }
+
         if (!isAgent(agent)) {
           throw new Error("Unsupported agent. Expected claude or codex.");
         }
@@ -970,12 +992,12 @@ async function main(argv: string[]): Promise<void> {
     });
 
   program
-    .command("close")
+    .command("kill")
     .description("Remove a review session from local state.")
     .argument("<id>", "review id")
     .action(async (reviewId: string) => {
       await closeReview({ reviewId });
-      console.log(`Closed ${reviewId}`);
+      console.log(`Killed ${reviewId}`);
     });
 
   await program.parseAsync(argv);

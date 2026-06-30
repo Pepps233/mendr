@@ -50,6 +50,14 @@ const rangeIssue: Issue = {
   description: "The changed range excludes the final modified line."
 };
 
+const progressIssue: Issue = {
+  title: "Persist fixed issue progress",
+  file: "src/state.ts",
+  line: 71,
+  severity: "medium",
+  description: "The view command can look stale while a later fix is still running."
+};
+
 function issueFingerprint(issue: Issue): string {
   return [
     issue.title.trim().replace(/\s+/g, " ").toLowerCase(),
@@ -107,6 +115,15 @@ async function readEvents(reviewDir: string) {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as { status: string });
+}
+
+async function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 500): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]);
 }
 
 function findCall(calls: ExecCall[], command: string, args: string[]) {
@@ -418,6 +435,169 @@ describe("orchestrator integration", () => {
       "Posting review",
       "Complete"
     ]);
+  });
+
+  it("publishes fixed issue progress before later fixes finish", async () => {
+    const home = await makeHome();
+    const id = "visible-progress-7c2d";
+    const reviewDir = await seedReview(home, id);
+    const exec = new FakeExec(["base0000", "first111", "second222"]);
+    const reviewContexts: ReviewContext[] = [];
+    const fixContexts: Array<{ issues: Issue[]; ctx: ReviewContext }> = [];
+    let reviewIndex = 0;
+    let resolveSecondFixStarted: () => void = () => {};
+    let releaseSecondFix: () => void = () => {};
+    const secondFixStarted = new Promise<void>((resolve) => {
+      resolveSecondFixStarted = resolve;
+    });
+    const secondFixReleased = new Promise<void>((resolve) => {
+      releaseSecondFix = resolve;
+    });
+    const driver = {
+      reviewContexts,
+      fixContexts,
+      async review(ctx: ReviewContext): Promise<Issue[]> {
+        reviewContexts.push(ctx);
+        const issues = reviewIndex === 0 ? [rangeIssue, progressIssue] : [];
+
+        reviewIndex += 1;
+
+        return issues;
+      },
+      async fix(
+        issues: Issue[],
+        ctx: ReviewContext
+      ): Promise<
+        Array<{
+          title: string;
+          fingerprint: string;
+          status: "fixed";
+          commitMessage: string;
+          summary: string;
+        }>
+      > {
+        fixContexts.push({ issues, ctx });
+
+        if (issues[0]?.title === progressIssue.title) {
+          resolveSecondFixStarted();
+          await secondFixReleased;
+        }
+
+        exec.markDirty();
+
+        return issues.map((issue) => ({
+          title: issue.title,
+          fingerprint: issueFingerprint(issue),
+          status: "fixed",
+          commitMessage: defaultCommitMessage,
+          summary: `Fixed ${issue.title}. Added coverage for the reviewed behavior.`
+        }));
+      }
+    };
+    const runPromise = runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    await withTimeout(
+      secondFixStarted,
+      "timed out waiting for the second fix to start"
+    );
+
+    let progressError: unknown;
+
+    try {
+      const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+      const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+      expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+      expect(reportMarkdown).toContain("**Commit:** `first111`");
+      expect(reportMarkdown).not.toContain("#### Persist fixed issue progress");
+      expect(state.issuesFixed).toBe(1);
+      expect(fixContexts).toHaveLength(2);
+      expect(fixContexts[1]?.ctx.reportMarkdown).toContain("first111");
+    } catch (error) {
+      progressError = error;
+    } finally {
+      releaseSecondFix();
+      await runPromise;
+    }
+
+    if (progressError) {
+      throw progressError;
+    }
+
+    const finalReportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const finalState = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+
+    expect(finalReportMarkdown).toContain("**Commit:** `second222`");
+    expect(finalState.issuesFixed).toBe(2);
+  });
+
+  it("keeps fixed issue progress when a later report write fails", async () => {
+    const home = await makeHome();
+    const id = "stale-state-6f31";
+    const reviewDir = await seedReview(home, id);
+    const exec = new FakeExec(["base0000", "first111", "second222"]);
+    let reviewIndex = 0;
+    const driver = {
+      async review(): Promise<Issue[]> {
+        const issues = reviewIndex === 0 ? [rangeIssue, progressIssue] : [];
+
+        reviewIndex += 1;
+
+        return issues;
+      },
+      async fix(
+        issues: Issue[]
+      ): Promise<
+        Array<{
+          title: string;
+          fingerprint: string;
+          status: "fixed";
+          commitMessage: string;
+          summary: string;
+        }>
+      > {
+        if (issues[0]?.title === progressIssue.title) {
+          await rm(join(reviewDir, "report.md"), { force: true });
+          await mkdir(join(reviewDir, "report.md"));
+        }
+
+        exec.markDirty();
+
+        return issues.map((issue) => ({
+          title: issue.title,
+          fingerprint: issueFingerprint(issue),
+          status: "fixed",
+          commitMessage: defaultCommitMessage,
+          summary: `Fixed ${issue.title}. Added coverage for the reviewed behavior.`
+        }));
+      }
+    };
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow();
+
+    const state = await readJson<{
+      phase: string;
+      currentStatus: string;
+      issuesFixed: number;
+    }>(join(reviewDir, "state.json"));
+
+    expect(state).toMatchObject({
+      phase: "failed",
+      currentStatus: "Orchestrator failed",
+      issuesFixed: 1
+    });
   });
 
   it("passes report markdown into later review rounds without re-fixing repeated issues", async () => {
