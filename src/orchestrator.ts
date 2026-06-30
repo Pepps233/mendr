@@ -217,7 +217,10 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
           reportPath,
           branch: meta.branch,
           branchPushRemote: normalizeBranchPushRemote(meta.branchPushRemote),
-          state
+          state,
+          setState: (nextState) => {
+            state = nextState;
+          }
         });
 
         report = outcome.report;
@@ -273,6 +276,7 @@ async function runFixRound(input: {
   branch: string;
   branchPushRemote: string;
   state: ReviewState;
+  setState: (state: ReviewState) => void;
 }): Promise<RoundOutcome> {
   let report = input.report;
   let fixedCount = 0;
@@ -315,6 +319,7 @@ async function runFixRound(input: {
       state = await updateStatus(input.options, state, {
         issuesFixed: state.issuesFixed + 1
       });
+      input.setState(state);
     } else {
       await appendEvent(input.options.mendrHome, input.options.reviewId, {
         status: "Fix failed",

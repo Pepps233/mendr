@@ -536,6 +536,70 @@ describe("orchestrator integration", () => {
     expect(finalState.issuesFixed).toBe(2);
   });
 
+  it("keeps fixed issue progress when a later report write fails", async () => {
+    const home = await makeHome();
+    const id = "stale-state-6f31";
+    const reviewDir = await seedReview(home, id);
+    const exec = new FakeExec(["base0000", "first111", "second222"]);
+    let reviewIndex = 0;
+    const driver = {
+      async review(): Promise<Issue[]> {
+        const issues = reviewIndex === 0 ? [rangeIssue, progressIssue] : [];
+
+        reviewIndex += 1;
+
+        return issues;
+      },
+      async fix(
+        issues: Issue[]
+      ): Promise<
+        Array<{
+          title: string;
+          fingerprint: string;
+          status: "fixed";
+          commitMessage: string;
+          summary: string;
+        }>
+      > {
+        if (issues[0]?.title === progressIssue.title) {
+          await rm(join(reviewDir, "report.md"), { force: true });
+          await mkdir(join(reviewDir, "report.md"));
+        }
+
+        exec.markDirty();
+
+        return issues.map((issue) => ({
+          title: issue.title,
+          fingerprint: issueFingerprint(issue),
+          status: "fixed",
+          commitMessage: defaultCommitMessage,
+          summary: `Fixed ${issue.title}. Added coverage for the reviewed behavior.`
+        }));
+      }
+    };
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow();
+
+    const state = await readJson<{
+      phase: string;
+      currentStatus: string;
+      issuesFixed: number;
+    }>(join(reviewDir, "state.json"));
+
+    expect(state).toMatchObject({
+      phase: "failed",
+      currentStatus: "Orchestrator failed",
+      issuesFixed: 1
+    });
+  });
+
   it("passes report markdown into later review rounds without re-fixing repeated issues", async () => {
     const home = await makeHome();
     const id = "steady-moon-2ab1";
