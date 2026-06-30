@@ -55,24 +55,6 @@ export async function fetchPullRequestReadinessRefs(
   };
 }
 
-export async function fetchPullRequestBaseBranch(
-  exec: ExecFn,
-  repo: string,
-  pr: string
-): Promise<string> {
-  const result = await execOk(exec, "gh", ["pr", "view", pr, "--json", "baseRefName"], {
-    cwd: repo
-  });
-  const parsed = JSON.parse(result.stdout) as { baseRefName?: unknown };
-  const branch = typeof parsed.baseRefName === "string" ? parsed.baseRefName.trim() : "";
-
-  if (branch.length === 0) {
-    throw new Error("Could not resolve the pull request base branch from GitHub.");
-  }
-
-  return branch;
-}
-
 export async function fetchPullRequestDetails(
   exec: ExecFn,
   repo: string,
