@@ -90,6 +90,7 @@ mendr --help
 
 The final pull request comment is generated from `report.md`.
 The report starts with exactly one Mendr summary heading and groups resolved and unresolved issues under dedicated sections.
+Each issue block includes a hidden fingerprint comment so same-title issues remain distinct.
 
 ```md
 ## Summary by Mendr
@@ -97,12 +98,14 @@ The report starts with exactly one Mendr summary heading and groups resolved and
 ### Resolved Issues
 
 #### <issue found by review agent>
+<!-- mendr-issue-fingerprint: <encoded issue fingerprint> -->
 **Commit:** <commit sha>
 <two sentences on how it was fixed>
 
 ### Unresolved Issues
 
 #### <issue requiring follow-up>
+<!-- mendr-issue-fingerprint: <encoded issue fingerprint> -->
 <why Mendr could not safely record a fix>
 
 ### Round Cap

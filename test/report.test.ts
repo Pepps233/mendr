@@ -63,6 +63,7 @@ describe("report markdown helpers", () => {
       "## Summary by Mendr",
       "### Resolved Issues",
       "#### Prevent off-by-one diff ranges",
+      expect.stringMatching(/^<!-- mendr-issue-fingerprint: [A-Za-z0-9_-]+ -->$/),
       "**Commit:** abc1234",
       "Added an inclusive upper-bound check for changed ranges. Covered the boundary case with a regression test."
     ]);
@@ -119,6 +120,60 @@ describe("report markdown helpers", () => {
     expect(resolved).toContain("### Resolved Issues");
     expect(resolved).toContain("**Commit:** abc1234");
     expect(resolved).not.toContain("The fixer exited before returning structured results.");
+  });
+
+  it("keeps distinct unresolved entries that share the same title", () => {
+    const sameTitleIssue = {
+      ...baseIssue,
+      file: "src/github.ts",
+      line: 17,
+      description: "The parser skips the final review comment."
+    };
+    const first = appendUnresolvedIssue("", {
+      issue: baseIssue,
+      summary:
+        "The fixer exited before returning structured results. Manual follow-up is required."
+    });
+    const second = appendUnresolvedIssue(first, {
+      issue: sameTitleIssue,
+      summary:
+        "The fixer left the review parser unchanged. Manual follow-up is required."
+    });
+
+    expect(second.match(/^#### Prevent off-by-one diff ranges$/gm)).toHaveLength(2);
+    expect(second).toContain("The fixer exited before returning structured results.");
+    expect(second).toContain("The fixer left the review parser unchanged.");
+  });
+
+  it("removes only the matching unresolved entry when same-title issues are resolved", () => {
+    const sameTitleIssue = {
+      ...baseIssue,
+      file: "src/github.ts",
+      line: 17,
+      description: "The parser skips the final review comment."
+    };
+    const unresolved = appendUnresolvedIssue(
+      appendUnresolvedIssue("", {
+        issue: baseIssue,
+        summary:
+          "The fixer exited before returning structured results. Manual follow-up is required."
+      }),
+      {
+        issue: sameTitleIssue,
+        summary:
+          "The fixer left the review parser unchanged. Manual follow-up is required."
+      }
+    );
+    const resolved = appendResolvedIssue(unresolved, {
+      ...baseEntry,
+      issue: sameTitleIssue,
+      sha: "def5678"
+    });
+
+    expect(resolved).toContain("### Resolved Issues");
+    expect(resolved).toContain("**Commit:** def5678");
+    expect(resolved).toContain("The fixer exited before returning structured results.");
+    expect(resolved).not.toContain("The fixer left the review parser unchanged.");
   });
 
   it("upgrades legacy Summary reports before appending new issue sections", () => {
