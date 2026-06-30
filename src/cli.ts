@@ -35,6 +35,7 @@ import {
   appendEvent,
   closeReviewSession,
   ensureMendrHome,
+  isTerminalReviewState,
   readEvents,
   readMeta,
   readState,
@@ -354,6 +355,7 @@ export async function renderReviewViewSnapshot(
   ]
     .filter(Boolean)
     .join("\n");
+  const terminal = isTerminalReviewState(state);
 
   return {
     ...state,
@@ -362,7 +364,7 @@ export async function renderReviewViewSnapshot(
     pr: meta.pr,
     recentEvents,
     frame,
-    spinner: state.done ? "" : "."
+    spinner: terminal ? "" : "."
   };
 }
 
@@ -468,7 +470,7 @@ export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
         setSnapshot(next);
         setError(undefined);
 
-        if (next.done && !shouldExit) {
+        if (isTerminalReviewState(next) && !shouldExit) {
           shouldExit = true;
           setTimeout(() => exit(), 0);
         }
@@ -503,6 +505,8 @@ export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
     );
   }
 
+  const terminal = isTerminalReviewState(snapshot);
+
   return React.createElement(
     Box,
     { flexDirection: "column" },
@@ -512,8 +516,8 @@ export function ReviewView(props: LiveReviewViewOptions): React.ReactElement {
     React.createElement(
       Text,
       null,
-      snapshot.done ? "" : React.createElement(Spinner, { type: "dots" }),
-      snapshot.done ? "" : " ",
+      terminal ? "" : React.createElement(Spinner, { type: "dots" }),
+      terminal ? "" : " ",
       snapshot.currentStatus
     ),
     React.createElement(

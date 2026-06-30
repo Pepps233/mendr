@@ -1784,6 +1784,50 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.error).toMatch(/head2222/);
   });
 
+  it("waits for GitHub to report the pushed PR head before waiting for checks", async () => {
+    const home = await makeHome();
+    const id = "stale-pr-head-after-push-8ac1";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      headRefOids: ["base0000", "fresh777"],
+      shas: ["base0000", "fresh777"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ done: boolean; currentStatus: string; error?: string }>(
+      join(reviewDir, "state.json")
+    );
+    const prHeadReads = findCalls(exec.calls, "gh", ["pr", "view", "42"]).filter((call) =>
+      call.args.includes("baseRefName,headRefOid")
+    );
+    const checksCall = findCall(exec.calls, "gh", ["pr", "checks", "42"]);
+
+    expect(prHeadReads).toHaveLength(3);
+    expect(exec.calls.indexOf(prHeadReads[1]!)).toBeLessThan(
+      exec.calls.indexOf(checksCall!)
+    );
+    expect(reportMarkdown).toContain("**Commit:** fresh777");
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+    expect(state).toMatchObject({ done: true, currentStatus: "Complete" });
+    expect(state.error).toBeUndefined();
+  });
+
   it("retries a failed PR comment once and preserves the report for manual posting", async () => {
     const home = await makeHome();
     const id = "comment-fail-5d72";

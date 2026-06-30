@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   allowedEffortsForAgent,
@@ -96,6 +97,14 @@ class PullRequestHeadChangedError extends Error {
     this.name = "PullRequestHeadChangedError";
   }
 }
+
+const PR_HEAD_PROPAGATION_TIMEOUT_MS = 30_000;
+const PR_HEAD_PROPAGATION_POLL_MS = 2_000;
+
+type ValidatePullRequestMergeabilityOptions = {
+  expectedHeadSha?: string;
+  waitForLocalHead?: boolean;
+};
 
 export async function runOrchestrator(options: RunOrchestratorOptions): Promise<void> {
   const exec = options.exec ?? defaultExec;
@@ -740,7 +749,9 @@ async function validatePullRequestReadyForSummary(
 
   try {
     expectedHeadSha = (
-      await validateCurrentPullRequestMergeability(exec, repo, pr)
+      await validateCurrentPullRequestMergeability(exec, repo, pr, {
+        waitForLocalHead: true
+      })
     ).headSha;
   } catch (error) {
     await failMergeabilityValidation(options, validationState, error);
@@ -753,7 +764,9 @@ async function validatePullRequestReadyForSummary(
   }
 
   try {
-    await validateCurrentPullRequestMergeability(exec, repo, pr, expectedHeadSha);
+    await validateCurrentPullRequestMergeability(exec, repo, pr, {
+      expectedHeadSha
+    });
   } catch (error) {
     await failMergeabilityValidation(options, validationState, error);
   }
@@ -765,13 +778,15 @@ async function validateCurrentPullRequestMergeability(
   exec: ExecFn,
   repo: string,
   pr: string,
-  expectedHeadSha?: string
+  options: ValidatePullRequestMergeabilityOptions = {}
 ): Promise<PullRequestReadinessRefs> {
-  const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
   const localHeadSha = await getHeadCommitSha(exec, repo);
+  const readinessRefs = options.waitForLocalHead
+    ? await waitForPullRequestHeadToMatchLocal(exec, repo, pr, localHeadSha)
+    : await fetchPullRequestReadinessRefs(exec, repo, pr);
 
-  if (expectedHeadSha !== undefined) {
-    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
+  if (options.expectedHeadSha !== undefined) {
+    assertPullRequestHeadUnchanged(options.expectedHeadSha, readinessRefs.headSha);
   }
 
   assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
@@ -781,6 +796,44 @@ async function validateCurrentPullRequestMergeability(
   await ensureMergeableWithRef(exec, repo, baseRef);
 
   return readinessRefs;
+}
+
+async function waitForPullRequestHeadToMatchLocal(
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  localHeadSha: string
+): Promise<PullRequestReadinessRefs> {
+  const deadline = Date.now() + PR_HEAD_PROPAGATION_TIMEOUT_MS;
+  let attempt = 0;
+  let lastObservedHeadSha = "";
+
+  while (Date.now() <= deadline) {
+    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+    lastObservedHeadSha = readinessRefs.headSha;
+
+    if (readinessRefs.headSha === localHeadSha) {
+      return readinessRefs;
+    }
+
+    const remainingMs = deadline - Date.now();
+
+    if (remainingMs <= 0) {
+      break;
+    }
+
+    const waitMs =
+      attempt === 0 ? 0 : Math.min(PR_HEAD_PROPAGATION_POLL_MS, remainingMs);
+    attempt += 1;
+
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+  }
+
+  throw new PullRequestHeadChangedError(
+    `Local session HEAD ${localHeadSha} does not match current PR head ${lastObservedHeadSha} after waiting for GitHub to report the pushed head. Re-run Mendr so the final summary is posted only after validating the current PR head.`
+  );
 }
 
 async function failMergeabilityValidation(
