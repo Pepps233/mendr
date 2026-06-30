@@ -34,6 +34,7 @@ import {
   fetchPullRequestReadinessRefs,
   postPullRequestComment,
   renderReviewMarkdown,
+  type PullRequestReadinessRefs,
   waitForPullRequestChecks
 } from "./github.js";
 import {
@@ -738,21 +739,11 @@ async function validatePullRequestReadyForSummary(
   let expectedHeadSha = "";
 
   try {
-    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
-    const localHeadSha = await getHeadCommitSha(exec, repo);
-
-    expectedHeadSha = readinessRefs.headSha;
-    assertPullRequestHeadMatchesLocal(localHeadSha, expectedHeadSha);
-
-    const baseRef = await fetchRemoteBranch(exec, repo, "origin", readinessRefs.baseBranch);
-
-    await ensureMergeableWithRef(exec, repo, baseRef);
+    expectedHeadSha = (
+      await validateCurrentPullRequestMergeability(exec, repo, pr)
+    ).headSha;
   } catch (error) {
-    if (error instanceof PullRequestHeadChangedError) {
-      await fail(options, validationState, "PR head changed", error);
-    }
-
-    await fail(options, validationState, "Merge conflict check failed", error);
+    await failMergeabilityValidation(options, validationState, error);
   }
 
   try {
@@ -762,20 +753,46 @@ async function validatePullRequestReadyForSummary(
   }
 
   try {
-    const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
-    const localHeadSha = await getHeadCommitSha(exec, repo);
-
-    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
-    assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
+    await validateCurrentPullRequestMergeability(exec, repo, pr, expectedHeadSha);
   } catch (error) {
-    if (error instanceof PullRequestHeadChangedError) {
-      await fail(options, validationState, "PR head changed", error);
-    }
-
-    await fail(options, validationState, "PR readiness check failed", error);
+    await failMergeabilityValidation(options, validationState, error);
   }
 
   return validationState;
+}
+
+async function validateCurrentPullRequestMergeability(
+  exec: ExecFn,
+  repo: string,
+  pr: string,
+  expectedHeadSha?: string
+): Promise<PullRequestReadinessRefs> {
+  const readinessRefs = await fetchPullRequestReadinessRefs(exec, repo, pr);
+  const localHeadSha = await getHeadCommitSha(exec, repo);
+
+  if (expectedHeadSha !== undefined) {
+    assertPullRequestHeadUnchanged(expectedHeadSha, readinessRefs.headSha);
+  }
+
+  assertPullRequestHeadMatchesLocal(localHeadSha, readinessRefs.headSha);
+
+  const baseRef = await fetchRemoteBranch(exec, repo, "origin", readinessRefs.baseBranch);
+
+  await ensureMergeableWithRef(exec, repo, baseRef);
+
+  return readinessRefs;
+}
+
+async function failMergeabilityValidation(
+  options: RunOrchestratorOptions,
+  state: ReviewState,
+  error: unknown
+): Promise<never> {
+  if (error instanceof PullRequestHeadChangedError) {
+    return fail(options, state, "PR head changed", error);
+  }
+
+  return fail(options, state, "Merge conflict check failed", error);
 }
 
 function assertPullRequestHeadMatchesLocal(localHeadSha: string, prHeadSha: string): void {

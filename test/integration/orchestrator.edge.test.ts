@@ -177,6 +177,8 @@ class ScriptedExec {
 
   private prHeadReadIndex = 0;
 
+  private mergeIndex = 0;
+
   constructor(
     private readonly options: {
       prView?: Record<string, unknown>;
@@ -189,6 +191,7 @@ class ScriptedExec {
       emptyRevList?: boolean;
       invalidVerifyShas?: string[];
       mergeConflict?: boolean;
+      mergeConflicts?: boolean[];
       pushFailures?: number;
       checksFailure?: boolean;
       commentFailures?: number;
@@ -286,7 +289,16 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "merge-tree") {
-      if (this.options.mergeConflict) {
+      const mergeConflict =
+        this.options.mergeConflicts && this.options.mergeConflicts.length > 0
+          ? this.options.mergeConflicts[
+              Math.min(this.mergeIndex, this.options.mergeConflicts.length - 1)
+            ]
+          : this.options.mergeConflict;
+
+      this.mergeIndex += 1;
+
+      if (mergeConflict) {
         return {
           stdout: "CONFLICT (content): Merge conflict in src/range.ts",
           stderr: "",
@@ -1601,6 +1613,55 @@ describe("orchestrator edge and failure handling", () => {
     expect(reportMarkdown).toContain("**Commit:** ci1111");
     expect(state.currentStatus).toMatch(/ci failed/i);
     expect(state.error).toMatch(/required check|checks/i);
+  });
+
+  it("revalidates mergeability after CI wait before posting the final summary", async () => {
+    const home = await makeHome();
+    const id = "base-conflict-after-ci-7a31";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      mergeConflicts: [false, true],
+      shas: ["base0000", "baseci111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/merge-tree|conflict/i);
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+    const mergeCalls = findCalls(exec.calls, "git", ["merge-tree"]);
+    const fetchBaseCalls = findCalls(exec.calls, "git", ["fetch", "origin"]);
+    const checksCall = findCall(exec.calls, "gh", ["pr", "checks", "42"]);
+
+    expect(fetchBaseCalls).toHaveLength(2);
+    expect(mergeCalls).toHaveLength(2);
+    expect(exec.calls.indexOf(checksCall!)).toBeLessThan(
+      exec.calls.indexOf(fetchBaseCalls[1]!)
+    );
+    expect(exec.calls.indexOf(fetchBaseCalls[1]!)).toBeLessThan(
+      exec.calls.indexOf(mergeCalls[1]!)
+    );
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    expect(reportMarkdown).toContain("**Commit:** baseci111");
+    expect(state.currentStatus).toMatch(/merge conflict check failed/i);
+    expect(state.error).toMatch(/conflict|merge-tree/i);
   });
 
   it("fails before posting the final summary when the PR head advances during readiness checks", async () => {
