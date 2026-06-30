@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/mendr_pipeline.png" alt="mendr autonomous pull request review workflow banner" width="80%">
+  <img src="https://raw.githubusercontent.com/Pepps233/mendr/main/assets/mendr_pipeline.png" alt="mendr autonomous pull request review workflow banner" width="80%">
 </p>
 
 # mendr
 
-[![Release](https://img.shields.io/badge/release-v0.0.0-blue)](package.json)
+[![Release](https://img.shields.io/badge/release-v0.1.0-blue)](package.json)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Language: TypeScript](https://img.shields.io/badge/language-TypeScript-3178c6.svg)](tsconfig.json)
 [![CI](https://github.com/Pepps233/mendr/actions/workflows/ci.yml/badge.svg)](https://github.com/Pepps233/mendr/actions/workflows/ci.yml)
@@ -40,7 +40,7 @@ mendr stop <id>
 mendr kill <id>
 ```
 
-![mendr](assets/mendr.gif)
+![mendr](https://raw.githubusercontent.com/Pepps233/mendr/main/assets/mendr.gif)
 
 `agent` must be `claude` or `codex`.
 `pr` may be a pull request number or a pull request URL.

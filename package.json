@@ -1,7 +1,7 @@
 {
   "name": "mendr",
-  "version": "0.0.0",
-  "description": "Autonomous PR review agent CLI scaffold.",
+  "version": "0.1.0",
+  "description": "Autonomous pull request review agent CLI.",
   "type": "module",
   "bin": {
     "mendr": "./dist/cli.js"
@@ -12,9 +12,25 @@
   "scripts": {
     "build": "tsup src/cli.ts src/daemon.ts --format esm --dts --clean --external react",
     "coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
     "test": "vitest run",
     "test:e2e": "MENDR_E2E=1 vitest run test/e2e",
     "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "cli",
+    "github",
+    "pull-request",
+    "codex",
+    "claude"
+  ],
+  "homepage": "https://github.com/Pepps233/mendr#readme",
+  "bugs": {
+    "url": "https://github.com/Pepps233/mendr/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Pepps233/mendr.git"
   },
   "dependencies": {
     "commander": "^12.1.0",
