@@ -192,6 +192,7 @@ class ScriptedExec {
       invalidVerifyShas?: string[];
       mergeConflict?: boolean;
       mergeConflicts?: boolean[];
+      mergeTreeWriteTreeUnsupported?: boolean;
       pushFailures?: number;
       checksFailure?: boolean;
       commentFailures?: number;
@@ -289,6 +290,14 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "merge-tree") {
+      if (this.options.mergeTreeWriteTreeUnsupported && args.includes("--write-tree")) {
+        return {
+          stdout: "",
+          stderr: "error: unknown option `write-tree'\nusage: git merge-tree <base-tree> <branch1> <branch2>",
+          exitCode: 129
+        };
+      }
+
       const mergeConflict =
         this.options.mergeConflicts && this.options.mergeConflicts.length > 0
           ? this.options.mergeConflicts[
@@ -306,6 +315,18 @@ class ScriptedExec {
         };
       }
 
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "worktree" && args[1] === "add") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "merge") {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+
+    if (command === "git" && args[0] === "worktree" && args[1] === "remove") {
       return { stdout: "", stderr: "", exitCode: 0 };
     }
 
@@ -1662,6 +1683,64 @@ describe("orchestrator edge and failure handling", () => {
     expect(reportMarkdown).toContain("**Commit:** baseci111");
     expect(state.currentStatus).toMatch(/merge conflict check failed/i);
     expect(state.error).toMatch(/conflict|merge-tree/i);
+  });
+
+  it("posts the final summary through the fallback when merge-tree write-tree is unavailable", async () => {
+    const home = await makeHome();
+    const id = "legacy-merge-tree-63d4";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      mergeTreeWriteTreeUnsupported: true,
+      shas: ["base0000", "legacy111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ done: boolean; currentStatus: string; error?: string }>(
+      join(reviewDir, "state.json")
+    );
+    const mergeTreeCalls = findCalls(exec.calls, "git", ["merge-tree"]);
+    const fallbackAddCalls = findCalls(exec.calls, "git", ["worktree", "add", "--detach"]);
+    const fallbackMergeCalls = findCalls(exec.calls, "git", [
+      "merge",
+      "--no-commit",
+      "--no-ff"
+    ]);
+    const fallbackRemoveCalls = findCalls(exec.calls, "git", [
+      "worktree",
+      "remove",
+      "--force"
+    ]);
+
+    expect(mergeTreeCalls).toHaveLength(2);
+    expect(fallbackAddCalls).toHaveLength(2);
+    expect(fallbackMergeCalls).toHaveLength(2);
+    expect(fallbackMergeCalls[0].args).toEqual([
+      "merge",
+      "--no-commit",
+      "--no-ff",
+      "refs/remotes/origin/main"
+    ]);
+    expect(fallbackRemoveCalls).toHaveLength(2);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+    expect(reportMarkdown).toContain("**Commit:** legacy111");
+    expect(state).toMatchObject({ done: true, currentStatus: "Complete" });
+    expect(state.error).toBeUndefined();
   });
 
   it("fails before posting the final summary when the PR head advances during readiness checks", async () => {
