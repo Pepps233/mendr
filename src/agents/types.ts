@@ -39,6 +39,7 @@ export type AgentDriver = {
 export type AgentInvocation = {
   command: string;
   args: string[];
+  input?: string;
 };
 
 export class AgentParseError extends Error {

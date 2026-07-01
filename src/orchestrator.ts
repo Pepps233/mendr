@@ -10,7 +10,6 @@ import {
   isEffortForAgent
 } from "./agents/driver.js";
 import {
-  dedupeIssues,
   issueFingerprint,
   type AgentDriver,
   type AgentName,
@@ -71,8 +70,14 @@ type RoundOutcome = {
 
 type IssueAttempt = {
   issue: Issue;
+  diff: string;
   round: number;
   issueIndex: number;
+};
+
+type ReviewedIssue = {
+  issue: Issue;
+  diff: string;
 };
 
 type SingleFixOutcome = {
@@ -110,6 +115,7 @@ class PullRequestHeadChangedError extends Error {
 
 const PR_HEAD_PROPAGATION_TIMEOUT_MS = 30_000;
 const PR_HEAD_PROPAGATION_POLL_MS = 2_000;
+const MAX_REVIEW_DIFF_LINES = 4_000;
 
 type ValidatePullRequestMergeabilityOptions = {
   expectedHeadSha?: string;
@@ -174,14 +180,16 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
         reviewMarkdown,
         reportMarkdown: report
       });
-      let issues: Issue[] = [];
+      let reviewedIssues: ReviewedIssue[] = [];
 
       try {
-        issues = dedupeIssues(await agentDriver.review(ctx));
+        reviewedIssues = await reviewDiffChunks(agentDriver, ctx);
       } catch (error) {
         await fail(options, state, "Review failed", error);
         return;
       }
+
+      const issues = reviewedIssues.map((entry) => entry.issue);
 
       await persistIssueRecords(options, round, issues);
 
@@ -200,8 +208,9 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
       }
 
       openIssues = issues;
-      const issueAttempts = issues.map((issue, index): IssueAttempt => ({
-        issue,
+      const issueAttempts = reviewedIssues.map((entry, index): IssueAttempt => ({
+        issue: entry.issue,
+        diff: entry.diff,
         round,
         issueIndex: index + 1
       }));
@@ -320,6 +329,207 @@ export async function runOrchestrator(options: RunOrchestratorOptions): Promise<
   }
 }
 
+async function reviewDiffChunks(
+  agentDriver: AgentDriver,
+  ctx: ReviewContext
+): Promise<ReviewedIssue[]> {
+  const reviewedIssues: ReviewedIssue[] = [];
+
+  for (const diff of splitDiffForReview(ctx.diff)) {
+    const issues = await agentDriver.review({
+      ...ctx,
+      diff
+    });
+
+    for (const issue of issues) {
+      reviewedIssues.push({
+        issue,
+        diff
+      });
+    }
+  }
+
+  return dedupeReviewedIssues(reviewedIssues);
+}
+
+function dedupeReviewedIssues(reviewedIssues: ReviewedIssue[]): ReviewedIssue[] {
+  const seen = new Set<string>();
+  const deduped: ReviewedIssue[] = [];
+
+  for (const entry of reviewedIssues) {
+    const fingerprint = issueFingerprint(entry.issue);
+
+    if (seen.has(fingerprint)) {
+      continue;
+    }
+
+    seen.add(fingerprint);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
+function splitDiffForReview(
+  diff: string,
+  maxLines = MAX_REVIEW_DIFF_LINES
+): string[] {
+  const normalized = diff.replace(/\r\n?/g, "\n");
+
+  if (lineCount(normalized) <= maxLines) {
+    return [normalized];
+  }
+
+  const chunks: string[][] = [];
+  let currentChunk: string[] = [];
+
+  for (const fileBlock of splitDiffFileBlocks(normalized.split("\n"))) {
+    const boundedBlocks =
+      fileBlock.length > maxLines
+        ? splitOversizedFileBlock(fileBlock, maxLines)
+        : [fileBlock];
+
+    for (const block of boundedBlocks) {
+      for (const boundedBlock of splitRawLines(block, maxLines)) {
+        if (
+          currentChunk.length > 0 &&
+          currentChunk.length + boundedBlock.length > maxLines
+        ) {
+          chunks.push(currentChunk);
+          currentChunk = [];
+        }
+
+        currentChunk.push(...boundedBlock);
+      }
+    }
+  }
+
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks.map((chunk) => chunk.join("\n"));
+}
+
+function splitDiffFileBlocks(lines: string[]): string[][] {
+  const blocks: string[][] = [];
+  let currentBlock: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("diff --git ") && currentBlock.length > 0) {
+      blocks.push(currentBlock);
+      currentBlock = [];
+    }
+
+    currentBlock.push(line);
+  }
+
+  if (currentBlock.length > 0) {
+    blocks.push(currentBlock);
+  }
+
+  return blocks;
+}
+
+function splitOversizedFileBlock(block: string[], maxLines: number): string[][] {
+  const firstHunkIndex = block.findIndex((line) => line.startsWith("@@"));
+
+  if (firstHunkIndex === -1) {
+    return splitRawLines(block, maxLines);
+  }
+
+  const header = block.slice(0, firstHunkIndex);
+  const hunks = splitHunks(block.slice(firstHunkIndex));
+  const chunks: string[][] = [];
+  let currentChunk = [...header];
+
+  for (const hunk of hunks) {
+    if (header.length + hunk.length > maxLines) {
+      if (currentChunk.length > header.length) {
+        chunks.push(currentChunk);
+        currentChunk = [...header];
+      }
+
+      chunks.push(...splitOversizedHunk(header, hunk, maxLines));
+      continue;
+    }
+
+    if (currentChunk.length + hunk.length > maxLines) {
+      chunks.push(currentChunk);
+      currentChunk = [...header];
+    }
+
+    currentChunk.push(...hunk);
+  }
+
+  if (currentChunk.length > header.length) {
+    chunks.push(currentChunk);
+  }
+
+  return chunks;
+}
+
+function splitHunks(lines: string[]): string[][] {
+  const hunks: string[][] = [];
+  let currentHunk: string[] = [];
+
+  for (const line of lines) {
+    if (line.startsWith("@@") && currentHunk.length > 0) {
+      hunks.push(currentHunk);
+      currentHunk = [];
+    }
+
+    currentHunk.push(line);
+  }
+
+  if (currentHunk.length > 0) {
+    hunks.push(currentHunk);
+  }
+
+  return hunks;
+}
+
+function splitOversizedHunk(
+  header: string[],
+  hunk: string[],
+  maxLines: number
+): string[][] {
+  const hunkHeader = hunk[0]?.startsWith("@@") ? [hunk[0]] : [];
+  const body = hunkHeader.length > 0 ? hunk.slice(1) : hunk;
+  const prefix = [...header, ...hunkHeader];
+  const bodyCapacity = maxLines - prefix.length;
+
+  if (bodyCapacity <= 0) {
+    return splitRawLines([...prefix, ...body], maxLines);
+  }
+
+  if (body.length === 0) {
+    return [prefix];
+  }
+
+  const chunks: string[][] = [];
+
+  for (let index = 0; index < body.length; index += bodyCapacity) {
+    chunks.push([...prefix, ...body.slice(index, index + bodyCapacity)]);
+  }
+
+  return chunks;
+}
+
+function splitRawLines(lines: string[], maxLines: number): string[][] {
+  const chunks: string[][] = [];
+
+  for (let index = 0; index < lines.length; index += maxLines) {
+    chunks.push(lines.slice(index, index + maxLines));
+  }
+
+  return chunks;
+}
+
+function lineCount(text: string): number {
+  return text.length === 0 ? 0 : text.split("\n").length;
+}
+
 async function runFixRound(input: {
   options: RunOrchestratorOptions;
   exec: ExecFn;
@@ -343,6 +553,7 @@ async function runFixRound(input: {
       ...input,
       ctx: {
         ...input.ctx,
+        diff: attempt.diff,
         reportMarkdown: report
       },
       attempt,
@@ -562,73 +773,18 @@ function validateCommitMessage(message: string | undefined): CommitMessageValida
     };
   }
 
-  const forbiddenReason = forbiddenCommitMessageReason(normalized);
+  const sanitized = removeCoAuthorLines(normalized).trim();
 
-  if (forbiddenReason) {
+  if (!sanitized) {
     return {
       valid: false,
-      reason: forbiddenReason
-    };
-  }
-
-  const lines = normalized.split("\n");
-
-  if (lines.length !== 4) {
-    return {
-      valid: false,
-      reason:
-        "commit messages must contain a subject, a blank line, and exactly two bullet lines"
-    };
-  }
-
-  if (lines[1] !== "") {
-    return {
-      valid: false,
-      reason: "commit messages must separate the subject from the body with a blank line"
-    };
-  }
-
-  const subject = parseCommitSubject(lines[0]);
-
-  if (!subject) {
-    return {
-      valid: false,
-      reason:
-        "commit message subjects must match <type>(<scope>): <short imperative summary>"
-    };
-  }
-
-  if (subject.summary.endsWith(".")) {
-    return {
-      valid: false,
-      reason: "commit message summaries must not end with a period"
-    };
-  }
-
-  if (looksNonImperative(subject.summary)) {
-    return {
-      valid: false,
-      reason: "commit message summaries must be imperative"
-    };
-  }
-
-  if (!lines[2].startsWith("- ") || lines[2].trim() === "-") {
-    return {
-      valid: false,
-      reason: "commit message bodies must use a non-empty first bullet"
-    };
-  }
-
-  if (!lines[3].startsWith("- ") || lines[3].trim() === "-") {
-    return {
-      valid: false,
-      reason: "commit message bodies must use a non-empty second bullet"
+      reason: "the fixer did not provide a commit message after unsupported trailers were removed"
     };
   }
 
   return {
     valid: true,
-    message: normalized
+    message: sanitized
   };
 }
 
@@ -636,82 +792,11 @@ function invalidCommitMessageSummary(reason: string): string {
   return `The fixer reported this issue as fixed, but its commit message is invalid: ${reason}. Manual follow-up is required before Mendr can safely record and push the fix.`;
 }
 
-function forbiddenCommitMessageReason(message: string): string | undefined {
-  const lines = message.split("\n");
-
-  if (lines.some((line) => /^co-authored-by\s*:/i.test(line.trim()))) {
-    return "commit messages must not include co-author lines";
-  }
-
-  if (/\b(?:ai|a\.i\.|openai|chatgpt|claude|anthropic|codex|providers?)\b/i.test(message)) {
-    return "commit messages must not include AI or provider references";
-  }
-
-  return undefined;
-}
-
-function parseCommitSubject(
-  line: string
-): { type: string; scope: string; summary: string } | undefined {
-  const match = /^([a-z][a-z0-9-]*)\(([a-z0-9._/-]+)\): ([A-Za-z][^\n]*)$/.exec(line);
-
-  if (!match) {
-    return undefined;
-  }
-
-  const [, type, scope, summary] = match;
-
-  if (!summary.trim()) {
-    return undefined;
-  }
-
-  return {
-    type,
-    scope,
-    summary
-  };
-}
-
-function looksNonImperative(summary: string): boolean {
-  const firstWord = summary.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-
-  return [
-    "added",
-    "adding",
-    "adds",
-    "changed",
-    "changing",
-    "changes",
-    "created",
-    "creating",
-    "creates",
-    "fixed",
-    "fixing",
-    "fixes",
-    "handled",
-    "handling",
-    "handles",
-    "made",
-    "makes",
-    "prevented",
-    "preventing",
-    "prevents",
-    "recorded",
-    "recording",
-    "records",
-    "rejected",
-    "rejecting",
-    "rejects",
-    "updated",
-    "updating",
-    "updates",
-    "used",
-    "using",
-    "uses",
-    "validated",
-    "validating",
-    "validates"
-  ].includes(firstWord);
+function removeCoAuthorLines(message: string): string {
+  return message
+    .split("\n")
+    .filter((line) => !/^co-authored-by\s*:/i.test(line.trim()))
+    .join("\n");
 }
 
 async function pushWithRetry(

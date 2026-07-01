@@ -111,9 +111,11 @@ describe("agent driver IO logging", () => {
     const driver = createAgentDriver({
       agent: "codex",
       outputDir,
-      exec: async (_command, args) => {
+      exec: async (_command, args, options) => {
         const outputFile = args[args.indexOf("--output-last-message") + 1];
 
+        expect(args).toEqual(expect.arrayContaining(["exec", "-"]));
+        expect(options?.input).toContain("review agent");
         await writeFile(outputFile, JSON.stringify([issue]), "utf8");
 
         return {

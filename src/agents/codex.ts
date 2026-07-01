@@ -28,9 +28,10 @@ export function buildCodexReviewInvocation(
 
   return {
     command: "codex",
+    input: prompt,
     args: [
       "exec",
-      prompt,
+      "-",
       "-m",
       ctx.model,
       "-c",
@@ -55,9 +56,10 @@ export function buildCodexFixInvocation(
 
   return {
     command: "codex",
+    input: prompt,
     args: [
       "exec",
-      prompt,
+      "-",
       "-m",
       ctx.model,
       "-c",
