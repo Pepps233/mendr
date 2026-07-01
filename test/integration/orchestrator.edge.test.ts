@@ -158,6 +158,84 @@ function makeLargeSingleHunkDiff(changedLines: number): string {
   return lines.join("\n");
 }
 
+function makeLargeMultiFileDiff(changedLinesPerFile: number): string {
+  const lines: string[] = [];
+
+  for (const file of ["first", "second"]) {
+    lines.push(
+      `diff --git a/src/${file}.ts b/src/${file}.ts`,
+      `--- a/src/${file}.ts`,
+      `+++ b/src/${file}.ts`,
+      `@@ -1,0 +1,${changedLinesPerFile} @@`
+    );
+
+    for (let index = 0; index < changedLinesPerFile; index += 1) {
+      lines.push(`+export const ${file}${index} = ${index};`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function makeLargeHeaderlessDiff(changedLines: number): string {
+  const lines = [
+    "diff --git a/src/headerless.ts b/src/headerless.ts",
+    "--- a/src/headerless.ts",
+    "+++ b/src/headerless.ts"
+  ];
+
+  for (let index = 0; index < changedLines; index += 1) {
+    lines.push(`+export const headerless${index} = ${index};`);
+  }
+
+  return lines.join("\n");
+}
+
+function makeLargeMalformedHunkDiff(changedLines: number): string {
+  const lines = [
+    "diff --git a/src/malformed.ts b/src/malformed.ts",
+    "--- a/src/malformed.ts",
+    "+++ b/src/malformed.ts",
+    "@@ malformed hunk header"
+  ];
+
+  for (let index = 0; index < changedLines; index += 1) {
+    lines.push(`+export const malformed${index} = ${index};`);
+  }
+
+  return lines.join("\n");
+}
+
+function makeLargeDeletionHunkDiff(changedLines: number): string {
+  const lines = [
+    "diff --git a/src/deleted.ts b/src/deleted.ts",
+    "--- a/src/deleted.ts",
+    "+++ b/src/deleted.ts",
+    `@@ -2,${changedLines} +1,0 @@`
+  ];
+
+  for (let index = 0; index < changedLines; index += 1) {
+    lines.push(`-export const deleted${index} = ${index};`);
+  }
+
+  return lines.join("\n");
+}
+
+function makeLargeNoCountContextHunkDiff(changedLines: number): string {
+  const lines = [
+    "diff --git a/src/context.ts b/src/context.ts",
+    "--- a/src/context.ts",
+    "+++ b/src/context.ts",
+    "@@ -1 +1 @@"
+  ];
+
+  for (let index = 0; index < changedLines; index += 1) {
+    lines.push(` export const context${index} = ${index};`);
+  }
+
+  return lines.join("\n");
+}
+
 function defaultCommitMessageForIssue(issue: Issue): string {
   if (issue.file.includes("state")) {
     return [
@@ -199,6 +277,8 @@ class ScriptedExec {
   private commentAttempts = 0;
 
   private prHeadReadIndex = 0;
+
+  private headReadIndex = 0;
 
   private mergeIndex = 0;
 
@@ -305,6 +385,20 @@ class ScriptedExec {
     }
 
     if (command === "git" && args[0] === "rev-parse" && args[1] === "HEAD") {
+      const headRead = this.options.headReads?.[
+        Math.min(this.headReadIndex, this.options.headReads.length - 1)
+      ];
+
+      this.headReadIndex += 1;
+
+      if (headRead instanceof Error) {
+        return { stdout: "", stderr: headRead.message, exitCode: 1 };
+      }
+
+      if (typeof headRead === "string") {
+        return { stdout: headRead, stderr: "", exitCode: 0 };
+      }
+
       return { stdout: this.currentHead, stderr: "", exitCode: 0 };
     }
 
@@ -678,6 +772,69 @@ describe("orchestrator edge and failure handling", () => {
     ]);
     expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+  });
+
+  it("reviews unusual oversized hunks in bounded chunks", async () => {
+    const cases = [
+      {
+        id: "multi-file",
+        diff: makeLargeMultiFileDiff(2_100)
+      },
+      {
+        id: "headerless",
+        diff: makeLargeHeaderlessDiff(4_250)
+      },
+      {
+        id: "malformed",
+        diff: makeLargeMalformedHunkDiff(4_250)
+      },
+      {
+        id: "deletion",
+        diff: makeLargeDeletionHunkDiff(4_250)
+      },
+      {
+        id: "context",
+        diff: makeLargeNoCountContextHunkDiff(4_250)
+      }
+    ];
+
+    for (const testCase of cases) {
+      const home = await makeHome();
+      const id = `unusual-oversized-hunk-${testCase.id}`;
+      const reviewDir = await seedReview(home, id);
+      const exec = new ScriptedExec({ diff: testCase.diff });
+      const reviewContexts: ReviewContext[] = [];
+      const driver = {
+        fixContexts: [] as Array<{ issues: Issue[]; ctx: ReviewContext }>,
+        reviewContexts,
+        async review(ctx: ReviewContext): Promise<Issue[]> {
+          reviewContexts.push(ctx);
+
+          if (diffLineCount(ctx.diff) > 4_000) {
+            throw new AgentParseFailure("Review prompt exceeded the large diff line budget");
+          }
+
+          return [];
+        },
+        async fix(): Promise<never> {
+          throw new Error("No fixes expected for empty chunk reviews.");
+        }
+      };
+
+      await runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      });
+
+      const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+
+      expect(reviewContexts.length).toBeGreaterThan(1);
+      expect(reviewContexts.every((ctx) => diffLineCount(ctx.diff) <= 4_000)).toBe(true);
+      expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
+      expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
+    }
   });
 
   it("records first-round review agent failures without pushing or commenting", async () => {
@@ -1894,6 +2051,48 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.currentStatus).toMatch(/pr head changed/i);
     expect(state.error).toMatch(/head1111/);
     expect(state.error).toMatch(/head2222/);
+  });
+
+  it("fails before posting the final summary when the local head diverges after CI", async () => {
+    const home = await makeHome();
+    const id = "local-head-diverged-4f61";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      headReads: ["base0000", "base0000", "head1111", "head1111", "local9999"],
+      headRefOids: ["head1111", "head1111"],
+      shas: ["base0000", "head1111"]
+    });
+    const driver = new ScriptedAgentDriver(
+      [[rangeIssue], []],
+      [
+        {
+          summary:
+            "Fixed the range calculation. Added coverage for the final modified line."
+        }
+      ]
+    );
+
+    await expect(
+      runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      })
+    ).rejects.toThrow(/local9999|head1111|current PR head/i);
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+    const state = await readJson<{ currentStatus: string; error: string }>(
+      join(reviewDir, "state.json")
+    );
+
+    expect(findCall(exec.calls, "gh", ["pr", "checks", "42"])).toBeDefined();
+    expect(findCalls(exec.calls, "git", ["merge-tree"])).toHaveLength(1);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeUndefined();
+    expect(reportMarkdown).toContain("**Commit:** head1111");
+    expect(state.currentStatus).toMatch(/pr head changed/i);
+    expect(state.error).toMatch(/head1111/);
+    expect(state.error).toMatch(/local9999/);
   });
 
   it("waits for GitHub to report the pushed PR head before waiting for checks", async () => {
