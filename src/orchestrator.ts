@@ -106,6 +106,14 @@ type CommitMessageValidation =
       reason: string;
     };
 
+type ParsedHunkHeader = {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  section: string;
+};
+
 class PullRequestHeadChangedError extends Error {
   constructor(message: string) {
     super(message);
@@ -494,26 +502,127 @@ function splitOversizedHunk(
   hunk: string[],
   maxLines: number
 ): string[][] {
-  const hunkHeader = hunk[0]?.startsWith("@@") ? [hunk[0]] : [];
-  const body = hunkHeader.length > 0 ? hunk.slice(1) : hunk;
-  const prefix = [...header, ...hunkHeader];
-  const bodyCapacity = maxLines - prefix.length;
+  const parsedHeader = parseHunkHeader(hunk[0]);
+
+  if (!parsedHeader) {
+    const hunkHeader = hunk[0]?.startsWith("@@") ? [hunk[0]] : [];
+    const body = hunkHeader.length > 0 ? hunk.slice(1) : hunk;
+    const prefix = [...header, ...hunkHeader];
+    const bodyCapacity = maxLines - prefix.length;
+
+    if (bodyCapacity <= 0) {
+      return splitRawLines([...prefix, ...body], maxLines);
+    }
+
+    if (body.length === 0) {
+      return [prefix];
+    }
+
+    const chunks: string[][] = [];
+
+    for (let index = 0; index < body.length; index += bodyCapacity) {
+      chunks.push([...prefix, ...body.slice(index, index + bodyCapacity)]);
+    }
+
+    return chunks;
+  }
+
+  const body = hunk.slice(1);
+  const bodyCapacity = maxLines - header.length - 1;
 
   if (bodyCapacity <= 0) {
-    return splitRawLines([...prefix, ...body], maxLines);
+    return splitRawLines([...header, hunk[0], ...body], maxLines);
   }
 
   if (body.length === 0) {
-    return [prefix];
+    return [[...header, hunk[0]]];
   }
 
   const chunks: string[][] = [];
+  let oldCursor = parsedHeader.oldStart;
+  let newCursor = parsedHeader.newStart;
+  let oldAnchor = initialHunkAnchor(parsedHeader.oldStart, parsedHeader.oldCount);
+  let newAnchor = initialHunkAnchor(parsedHeader.newStart, parsedHeader.newCount);
 
   for (let index = 0; index < body.length; index += bodyCapacity) {
-    chunks.push([...prefix, ...body.slice(index, index + bodyCapacity)]);
+    const bodySlice = body.slice(index, index + bodyCapacity);
+    const oldCount = countHunkLines(bodySlice, "old");
+    const newCount = countHunkLines(bodySlice, "new");
+    const hunkHeader = formatHunkHeader(parsedHeader, {
+      oldStart: hunkRangeStart(oldCursor, oldAnchor, oldCount),
+      oldCount,
+      newStart: hunkRangeStart(newCursor, newAnchor, newCount),
+      newCount
+    });
+
+    chunks.push([...header, hunkHeader, ...bodySlice]);
+
+    if (oldCount > 0) {
+      oldAnchor = oldCursor + oldCount - 1;
+      oldCursor += oldCount;
+    }
+
+    if (newCount > 0) {
+      newAnchor = newCursor + newCount - 1;
+      newCursor += newCount;
+    }
   }
 
   return chunks;
+}
+
+function parseHunkHeader(line: string | undefined): ParsedHunkHeader | undefined {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/.exec(
+    line ?? ""
+  );
+
+  if (!match) {
+    return undefined;
+  }
+
+  return {
+    oldStart: Number(match[1]),
+    oldCount: match[2] === undefined ? 1 : Number(match[2]),
+    newStart: Number(match[3]),
+    newCount: match[4] === undefined ? 1 : Number(match[4]),
+    section: match[5]
+  };
+}
+
+function formatHunkHeader(
+  parsedHeader: ParsedHunkHeader,
+  range: {
+    oldStart: number;
+    oldCount: number;
+    newStart: number;
+    newCount: number;
+  }
+): string {
+  return [
+    `@@ -${range.oldStart},${range.oldCount}`,
+    `+${range.newStart},${range.newCount}`,
+    `@@${parsedHeader.section}`
+  ].join(" ");
+}
+
+function initialHunkAnchor(start: number, count: number): number {
+  return count === 0 ? start : Math.max(0, start - 1);
+}
+
+function hunkRangeStart(cursor: number, anchor: number, count: number): number {
+  return count === 0 ? anchor : cursor;
+}
+
+function countHunkLines(lines: string[], side: "old" | "new"): number {
+  return lines.filter((line) => {
+    const prefix = line[0];
+
+    if (prefix === " ") {
+      return true;
+    }
+
+    return side === "old" ? prefix === "-" : prefix === "+";
+  }).length;
 }
 
 function splitRawLines(lines: string[], maxLines: number): string[][] {

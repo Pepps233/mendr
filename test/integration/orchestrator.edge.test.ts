@@ -139,12 +139,16 @@ function diffLineCount(diff: string): number {
   return diff.length === 0 ? 0 : diff.split("\n").length;
 }
 
+function firstHunkHeader(diff: string): string | undefined {
+  return diff.split("\n").find((line) => line.startsWith("@@"));
+}
+
 function makeLargeSingleHunkDiff(changedLines: number): string {
   const lines = [
     "diff --git a/src/large.ts b/src/large.ts",
     "--- a/src/large.ts",
     "+++ b/src/large.ts",
-    `@@ -1,${changedLines} +1,${changedLines} @@`
+    `@@ -1,0 +2,${changedLines} @@`
   ];
 
   for (let index = 0; index < changedLines; index += 1) {
@@ -668,6 +672,10 @@ describe("orchestrator edge and failure handling", () => {
 
     expect(reviewContexts.length).toBeGreaterThan(1);
     expect(reviewContexts.every((ctx) => diffLineCount(ctx.diff) <= 4_000)).toBe(true);
+    expect(reviewContexts.map((ctx) => firstHunkHeader(ctx.diff))).toEqual([
+      "@@ -1,0 +2,3996 @@",
+      "@@ -1,0 +3998,254 @@"
+    ]);
     expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
     expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
