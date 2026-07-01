@@ -1,6 +1,6 @@
 {
   "name": "@pepps233/mendr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Autonomous pull request review agent CLI.",
   "type": "module",
   "bin": {
