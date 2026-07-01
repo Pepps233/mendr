@@ -44,6 +44,12 @@ import {
   type ReviewMetaWithDefaults,
   type ReviewState
 } from "./state.js";
+import {
+  formatMendrVersionStatus,
+  getMendrVersionStatus,
+  maybePromptForMendrUpgrade,
+  mendrVersion
+} from "./version.js";
 
 export type CliParseResult =
   | {
@@ -58,6 +64,10 @@ export type CliParseResult =
   | {
       ok: true;
       command: "ls";
+    }
+  | {
+      ok: true;
+      command: "version";
     }
   | {
       ok: true;
@@ -149,6 +159,13 @@ export function parseCliArgs(argv: string[]): CliParseResult {
     return {
       ok: true,
       command: "ls"
+    };
+  }
+
+  if (args[0] === "version" || args[0] === "--version" || args[0] === "-V") {
+    return {
+      ok: true,
+      command: "version"
     };
   }
 
@@ -915,6 +932,7 @@ async function main(argv: string[]): Promise<void> {
 
   program
     .name("mendr")
+    .version(mendrVersion)
     .description("Run an autonomous agentic review loop on a GitHub pull request.")
     .argument("[agent]", "agent CLI to use: claude or codex")
     .argument("[pr]", "pull request number or GitHub pull request URL")
@@ -979,6 +997,13 @@ async function main(argv: string[]): Promise<void> {
     });
 
   program
+    .command("version")
+    .description("Check the installed mendr version.")
+    .action(async () => {
+      console.log(formatMendrVersionStatus(await getMendrVersionStatus()));
+    });
+
+  program
     .command("view")
     .description("Watch a live review status view.")
     .argument("<id>", "review id")
@@ -1003,6 +1028,10 @@ async function main(argv: string[]): Promise<void> {
       await closeReview({ reviewId });
       console.log(`Killed ${reviewId}`);
     });
+
+  program.hook("preAction", async () => {
+    await maybePromptForMendrUpgrade();
+  });
 
   await program.parseAsync(argv);
 }

@@ -38,6 +38,7 @@ mendr ls
 mendr view <id>
 mendr stop <id>
 mendr kill <id>
+mendr version
 ```
 
 ![mendr](https://raw.githubusercontent.com/Pepps233/mendr/main/assets/mendr.gif)
@@ -50,6 +51,8 @@ mendr kill <id>
 Codex accepts `low`, `medium`, `high`, or `xhigh`.
 Claude Code accepts `low`, `medium`, `high`, `xhigh`, or `max`.
 Set `MENDR_CODEX_MODEL`, `MENDR_CODEX_EFFORT`, `MENDR_CLAUDE_MODEL`, or `MENDR_CLAUDE_EFFORT` to change unattended defaults.
+Run `mendr version` to check the installed package version against the latest npm release.
+When an interactive npm-installed `mendr` is behind the latest release, the first command for that installed/latest version pair prompts before continuing so you can upgrade with yes or no.
 
 ## Example
 

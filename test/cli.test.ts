@@ -123,6 +123,21 @@ describe("CLI argument parsing", () => {
     });
   });
 
+  it("parses the version command and option", () => {
+    expect(parseCliArgs(["node", "mendr", "version"])).toEqual({
+      ok: true,
+      command: "version"
+    });
+    expect(parseCliArgs(["node", "mendr", "--version"])).toEqual({
+      ok: true,
+      command: "version"
+    });
+    expect(parseCliArgs(["node", "mendr", "-V"])).toEqual({
+      ok: true,
+      command: "version"
+    });
+  });
+
   it("rejects the retired close command", () => {
     expect(parseCliArgs(["node", "mendr", "close", "1"])).toEqual({
       ok: false,
