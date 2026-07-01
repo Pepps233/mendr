@@ -76,13 +76,13 @@ describe("Codex agent driver", () => {
   it("builds the documented one-shot Codex review invocation", () => {
     const outputFile = "/tmp/mendr-codex-final-message.json";
     const invocation = buildCodexReviewInvocation(reviewContext, { outputFile });
-    const prompt = invocation.args[1];
+    const prompt = invocation.input;
 
     expect(invocation.command).toBe("codex");
     expect(invocation.args).toEqual(
       expect.arrayContaining([
         "exec",
-        expect.any(String),
+        "-",
         "-m",
         reviewContext.model,
         "-c",
@@ -97,6 +97,7 @@ describe("Codex agent driver", () => {
       ])
     );
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
+    expect(invocation.args).not.toContain(buildReviewPrompt(reviewContext));
     expect(prompt).toBe(buildReviewPrompt(reviewContext));
     expect(prompt).toContain("review agent");
     expect(prompt).toContain("security issues");
@@ -111,13 +112,13 @@ describe("Codex agent driver", () => {
   it("builds the documented one-shot Codex fix invocation from the shared prompt", () => {
     const outputFile = "/tmp/mendr-codex-final-message.json";
     const invocation = buildCodexFixInvocation([issue], reviewContext, { outputFile });
-    const prompt = invocation.args[1];
+    const prompt = invocation.input;
 
     expect(invocation.command).toBe("codex");
     expect(invocation.args).toEqual(
       expect.arrayContaining([
         "exec",
-        expect.any(String),
+        "-",
         "-m",
         reviewContext.model,
         "-c",
@@ -132,6 +133,7 @@ describe("Codex agent driver", () => {
       ])
     );
     expect(invocation.args).not.toEqual(expect.arrayContaining(["--continue", "--resume"]));
+    expect(invocation.args).not.toContain(buildFixPrompt([issue], reviewContext));
     expect(prompt).toBe(buildFixPrompt([issue], reviewContext));
     expect(prompt).toContain("fixer agent");
     expect(prompt).toContain("Do not create commits");

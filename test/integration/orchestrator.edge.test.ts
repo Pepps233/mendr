@@ -135,6 +135,29 @@ function callInput(call: ExecCall): string | undefined {
   return (call.options as { input?: string } | undefined)?.input;
 }
 
+function diffLineCount(diff: string): number {
+  return diff.length === 0 ? 0 : diff.split("\n").length;
+}
+
+function firstHunkHeader(diff: string): string | undefined {
+  return diff.split("\n").find((line) => line.startsWith("@@"));
+}
+
+function makeLargeSingleHunkDiff(changedLines: number): string {
+  const lines = [
+    "diff --git a/src/large.ts b/src/large.ts",
+    "--- a/src/large.ts",
+    "+++ b/src/large.ts",
+    `@@ -1,0 +2,${changedLines} @@`
+  ];
+
+  for (let index = 0; index < changedLines; index += 1) {
+    lines.push(`+export const value${index} = ${index};`);
+  }
+
+  return lines.join("\n");
+}
+
 function defaultCommitMessageForIssue(issue: Issue): string {
   if (issue.file.includes("state")) {
     return [
@@ -611,6 +634,50 @@ describe("orchestrator edge and failure handling", () => {
       "Posting review",
       "Complete"
     ]);
+  });
+
+  it("reviews large PR diffs in bounded chunks", async () => {
+    const home = await makeHome();
+    const id = "large-diff-review-23bf";
+    const reviewDir = await seedReview(home, id);
+    const exec = new ScriptedExec({
+      diff: makeLargeSingleHunkDiff(4_250)
+    });
+    const reviewContexts: ReviewContext[] = [];
+    const driver = {
+      fixContexts: [] as Array<{ issues: Issue[]; ctx: ReviewContext }>,
+      reviewContexts,
+      async review(ctx: ReviewContext): Promise<Issue[]> {
+        reviewContexts.push(ctx);
+
+        if (diffLineCount(ctx.diff) > 4_000) {
+          throw new AgentParseFailure("Review prompt exceeded the large diff line budget");
+        }
+
+        return [];
+      },
+      async fix(): Promise<never> {
+        throw new Error("No fixes expected for empty chunk reviews.");
+      }
+    };
+
+    await runOrchestrator({
+      mendrHome: home,
+      reviewId: id,
+      agentDriver: driver,
+      exec: exec.run
+    });
+
+    const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+
+    expect(reviewContexts.length).toBeGreaterThan(1);
+    expect(reviewContexts.every((ctx) => diffLineCount(ctx.diff) <= 4_000)).toBe(true);
+    expect(reviewContexts.map((ctx) => firstHunkHeader(ctx.diff))).toEqual([
+      "@@ -1,0 +2,3996 @@",
+      "@@ -1,0 +3998,254 @@"
+    ]);
+    expect(reportMarkdown).toMatch(/no changed-scope issues found/i);
+    expect(findCall(exec.calls, "gh", ["pr", "comment", "42"])).toBeDefined();
   });
 
   it("records first-round review agent failures without pushing or commenting", async () => {
@@ -1255,16 +1322,19 @@ describe("orchestrator edge and failure handling", () => {
     expect(state.issuesFixed).toBe(1);
   });
 
-  it("marks fixed results with unsafe commit messages unresolved", async () => {
+  it("strips co-author trailers from fixer commit messages before committing", async () => {
     const home = await makeHome();
-    const id = "unsafe-commit-message-6c21";
+    const id = "stripped-coauthor-commit-message-6c21";
     const reviewDir = await seedReview(home, id);
     const exec = new ScriptedExec({ shas: ["base0000", "unsafe888"] });
-    const commitMessage = [
+    const cleanedCommitMessage = [
       "fix(range): include final changed line",
       "",
       "- Updates range parsing to keep the upper bound in scope",
-      "- Makes the parent-created commit describe the actual code change",
+      "- Makes the parent-created commit describe the actual code change"
+    ].join("\n");
+    const commitMessage = [
+      cleanedCommitMessage,
       "Co-authored-by: Claude <claude@example.com>"
     ].join("\n");
     const driver = new ScriptedAgentDriver(
@@ -1287,17 +1357,115 @@ describe("orchestrator edge and failure handling", () => {
 
     const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
     const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+    const commitCall = findCall(exec.calls, "git", ["commit"]);
 
+    expect(callInput(commitCall!)).toBe(`${cleanedCommitMessage}\n`);
     expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
-    expect(reportMarkdown).toContain("### Unresolved Issues");
-    expect(reportMarkdown).not.toContain("**Commit:** (failed)");
-    expect(reportMarkdown).toMatch(/commit message/i);
-    expect(state.issuesFixed).toBe(0);
-    expect(findCall(exec.calls, "git", ["commit"])).toBeUndefined();
-    expect(findCall(exec.calls, "git", ["push"])).toBeUndefined();
+    expect(reportMarkdown).not.toContain("### Unresolved Issues");
+    expect(state.issuesFixed).toBe(1);
+    expect(findCall(exec.calls, "git", ["push"])).toBeDefined();
   });
 
-  it("rejects malformed fixer commit messages before committing", async () => {
+  it("accepts safe fixer commit messages outside the prompted style", async () => {
+    const safeCommitMessageCases = [
+      {
+        id: "provider-reference",
+        message: [
+          "fix(range): include final changed line",
+          "",
+          "- Keeps OpenAI output from leaking into commit metadata",
+          "- Covers provider reference handling before commit"
+        ].join("\n")
+      },
+      {
+        id: "short",
+        message: [
+          "fix(range): include final changed line",
+          "- Keeps the upper bound inside the reviewed range"
+        ].join("\n")
+      },
+      {
+        id: "blank",
+        message: [
+          "fix(range): include final changed line",
+          "not blank",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers relaxed blank separator handling"
+        ].join("\n")
+      },
+      {
+        id: "subject",
+        message: [
+          "fix range include final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers relaxed subject format handling"
+        ].join("\n")
+      },
+      {
+        id: "period",
+        message: [
+          "fix(range): include final changed line.",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers relaxed period-ended subject handling"
+        ].join("\n")
+      },
+      {
+        id: "imperative",
+        message: [
+          "fix(range): fixed final changed line",
+          "",
+          "- Keeps the upper bound inside the reviewed range",
+          "- Covers relaxed non-imperative summary handling"
+        ].join("\n")
+      },
+      {
+        id: "empty-bullets",
+        message: [
+          "fix(range): include final changed line",
+          "",
+          "- ",
+          "-"
+        ].join("\n")
+      }
+    ];
+
+    for (const testCase of safeCommitMessageCases) {
+      const home = await makeHome();
+      const id = `safe-commit-message-${testCase.id}`;
+      const reviewDir = await seedReview(home, id);
+      const exec = new ScriptedExec({ shas: ["base0000", `ok${testCase.id}`] });
+      const driver = new ScriptedAgentDriver(
+        [[rangeIssue], []],
+        [
+          {
+            commitMessage: testCase.message,
+            summary:
+              "Updated the parser boundary handling. Added validation coverage for relaxed commit messages."
+          }
+        ]
+      );
+
+      await runOrchestrator({
+        mendrHome: home,
+        reviewId: id,
+        agentDriver: driver,
+        exec: exec.run
+      });
+
+      const reportMarkdown = await readFile(join(reviewDir, "report.md"), "utf8");
+      const state = await readJson<{ issuesFixed: number }>(join(reviewDir, "state.json"));
+      const commitCall = findCall(exec.calls, "git", ["commit"]);
+
+      expect(callInput(commitCall!)).toBe(`${testCase.message}\n`);
+      expect(reportMarkdown).toContain("#### Prevent off-by-one diff ranges");
+      expect(reportMarkdown).not.toContain("### Unresolved Issues");
+      expect(state.issuesFixed).toBe(1);
+    }
+  });
+
+  it("rejects commit messages that cannot be safely passed to git", async () => {
     const invalidCommitMessageCases = [
       {
         id: "nul",
@@ -1308,84 +1476,6 @@ describe("orchestrator edge and failure handling", () => {
           "- Covers the final changed line through validation"
         ].join("\n"),
         reason: /NUL bytes/i
-      },
-      {
-        id: "provider",
-        message: [
-          "fix(range): include final changed line",
-          "",
-          "- Keeps OpenAI output from leaking into commit metadata",
-          "- Covers provider reference rejection before commit"
-        ].join("\n"),
-        reason: /provider references/i
-      },
-      {
-        id: "short",
-        message: [
-          "fix(range): include final changed line",
-          "- Keeps the upper bound inside the reviewed range"
-        ].join("\n"),
-        reason: /exactly two bullet lines/i
-      },
-      {
-        id: "blank",
-        message: [
-          "fix(range): include final changed line",
-          "not blank",
-          "- Keeps the upper bound inside the reviewed range",
-          "- Covers blank separator enforcement"
-        ].join("\n"),
-        reason: /blank line/i
-      },
-      {
-        id: "subject",
-        message: [
-          "fix range include final changed line",
-          "",
-          "- Keeps the upper bound inside the reviewed range",
-          "- Covers subject format enforcement"
-        ].join("\n"),
-        reason: /subjects must match/i
-      },
-      {
-        id: "period",
-        message: [
-          "fix(range): include final changed line.",
-          "",
-          "- Keeps the upper bound inside the reviewed range",
-          "- Covers period-ended subject rejection"
-        ].join("\n"),
-        reason: /must not end with a period/i
-      },
-      {
-        id: "imperative",
-        message: [
-          "fix(range): fixed final changed line",
-          "",
-          "- Keeps the upper bound inside the reviewed range",
-          "- Covers non-imperative summary rejection"
-        ].join("\n"),
-        reason: /must be imperative/i
-      },
-      {
-        id: "first-bullet",
-        message: [
-          "fix(range): include final changed line",
-          "",
-          "- ",
-          "- Covers first bullet validation"
-        ].join("\n"),
-        reason: /non-empty first bullet/i
-      },
-      {
-        id: "second-bullet",
-        message: [
-          "fix(range): include final changed line",
-          "",
-          "- Keeps the upper bound inside the reviewed range",
-          "-"
-        ].join("\n"),
-        reason: /non-empty second bullet/i
       }
     ];
 

@@ -200,6 +200,7 @@ async function runAgentInvocation(
   const stderrFile = join(options.outputDir, `${options.label}.stderr.log`);
   const result = await exec(invocation.command, invocation.args, {
     cwd: options.cwd,
+    input: invocation.input,
     timeoutMs: agentTimeoutMs(),
     stdoutFile,
     stderrFile
